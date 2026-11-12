@@ -59,6 +59,110 @@ export function requireSlotGenerationResult(response, availability) {
   return requireAvailableSlots(response, availability.doctor.id, availability.date);
 }
 
+export const VERIFICATION_STATUSES = ['UNVERIFIED', 'SUBMITTED', 'UNDER_REVIEW', 'VERIFIED', 'REJECTED'];
+export const ADMIN_QUEUE_STATUSES = ['SUBMITTED', 'UNDER_REVIEW', 'VERIFIED', 'REJECTED'];
+export const VERIFICATION_DOCUMENT_KINDS = ['ID_PROOF', 'QUALIFICATION'];
+export const VERIFICATION_IMAGE_MIME_TYPES = ['image/png', 'image/jpeg'];
+
+function extractMediaType(headers) {
+  const contentType = headers?.get?.('content-type') ?? headers?.['content-type'];
+  return typeof contentType === 'string' ? contentType.split(';', 1)[0].trim().toLowerCase() : '';
+}
+
+function isVerificationDocumentItem(doc, expectedDoctorId, expectedKind) {
+  return isObject(doc)
+    && isApiId(doc.doctorId)
+    && (expectedDoctorId == null || doc.doctorId === expectedDoctorId)
+    && VERIFICATION_DOCUMENT_KINDS.includes(doc.documentKind)
+    && (expectedKind == null || doc.documentKind === expectedKind)
+    && VERIFICATION_IMAGE_MIME_TYPES.includes(doc.mediaType)
+    && Number.isSafeInteger(doc.fileSize) && doc.fileSize > 0
+    && isText(doc.createdAt);
+}
+
+export function requireNoContentResponse(response) {
+  if (response?.status !== 204) {
+    throw new UnexpectedApiResponse();
+  }
+}
+
+export function requireDoctorVerificationDetails(response, expectedDoctorId) {
+  if (response?.status !== 200) {
+    throw new UnexpectedApiResponse();
+  }
+  return requireJsonResponse(response, (data) =>
+    isObject(data)
+    && isApiId(data.doctorId)
+    && (expectedDoctorId == null || data.doctorId === expectedDoctorId)
+    && VERIFICATION_STATUSES.includes(data.status)
+    && (data.latestRejectionReason == null || typeof data.latestRejectionReason === 'string')
+    && isText(data.reviewVersion)
+    && Array.isArray(data.history)
+    && data.history.every((entry) =>
+      isObject(entry)
+      && VERIFICATION_STATUSES.includes(entry.previousStatus)
+      && VERIFICATION_STATUSES.includes(entry.newStatus)
+      && ['DOCTOR', 'ADMIN', 'SYSTEM'].includes(entry.actorRole)
+      && isText(entry.occurredAt)),
+  );
+}
+
+export function requireVerificationDocuments(response, expectedDoctorId) {
+  if (response?.status !== 200) {
+    throw new UnexpectedApiResponse();
+  }
+  return requireJsonResponse(response, (data) =>
+    Array.isArray(data) && data.every((doc) => isVerificationDocumentItem(doc, expectedDoctorId, null)),
+  );
+}
+
+export function requireUploadedVerificationDocument(response, expectedDoctorId, expectedKind) {
+  if (response?.status !== 201) {
+    throw new UnexpectedApiResponse();
+  }
+  return requireJsonResponse(response, (data) => isVerificationDocumentItem(data, expectedDoctorId, expectedKind));
+}
+
+export function requireVerificationQueue(response) {
+  if (response?.status !== 200) {
+    throw new UnexpectedApiResponse();
+  }
+  return requireJsonResponse(response, (data) =>
+    isObject(data)
+    && Array.isArray(data.items)
+    && Number.isSafeInteger(data.page) && data.page >= 0
+    && Number.isSafeInteger(data.size) && data.size >= 1
+    && Number.isSafeInteger(data.totalElements) && data.totalElements >= 0
+    && Number.isSafeInteger(data.totalPages) && data.totalPages >= 0
+    && typeof data.hasNext === 'boolean'
+    && typeof data.hasPrevious === 'boolean'
+    && data.items.every((item) =>
+      isObject(item)
+      && isApiId(item.doctorId)
+      && isText(item.doctorName)
+      && ADMIN_QUEUE_STATUSES.includes(item.status)
+      && (item.latestRejectionReason == null || typeof item.latestRejectionReason === 'string')),
+  );
+}
+
+export function requirePreviewImageBlob(response) {
+  if (response?.status !== 200) {
+    throw new UnexpectedApiResponse();
+  }
+  const mediaType = extractMediaType(response?.headers);
+  const blob = response?.data;
+  const blobType = typeof blob?.type === 'string' ? blob.type.split(';', 1)[0].trim().toLowerCase() : '';
+  const hasBlob = typeof Blob !== 'undefined' ? blob instanceof Blob : isObject(blob);
+  const hasBytes = Number.isFinite(blob?.size) ? blob.size > 0 : true;
+  if (!VERIFICATION_IMAGE_MIME_TYPES.includes(mediaType)
+      || !hasBlob
+      || !hasBytes
+      || (blobType && !VERIFICATION_IMAGE_MIME_TYPES.includes(blobType))) {
+    throw new UnexpectedApiResponse();
+  }
+  return blob;
+}
+
 export function mutationErrorMessage(error, fallback) {
   if (error instanceof UnexpectedApiResponse) return error.message;
   return error.response?.data?.message || fallback;

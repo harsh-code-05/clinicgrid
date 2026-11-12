@@ -4,6 +4,7 @@ import api from '../api/axios';
 import { mutationErrorMessage, requireAppointmentResult } from '../api/responseValidation';
 import { useAuth } from '../context/useAuth';
 import AvailabilityManager from '../components/AvailabilityManager';
+import AdminVerificationPanel from '../components/AdminVerificationPanel';
 import AppointmentListState from '../components/AppointmentListState';
 import AppointmentMetricsState from '../components/AppointmentMetricsState';
 import { RequestSequencer, executeSequencedRequest } from '../utils/requestSequencer';
@@ -257,6 +258,13 @@ export default function AdminDashboard() {
         >
           Doctor Availability &amp; Slots
         </button>
+        <button
+          type="button"
+          className={`tab-btn ${activeTab === 'verification' ? 'active' : ''}`}
+          onClick={() => setActiveTab('verification')}
+        >
+          Doctor Verification
+        </button>
       </nav>
 
       <main className="dashboard-content">
@@ -485,6 +493,9 @@ export default function AdminDashboard() {
         {activeTab === 'availability' && (
           <AvailabilityManager isAdmin={true} onSlotsGenerated={fetchAppointments} />
         )}
+
+        {/* Tab 3: Doctor Professional Verification */}
+        {activeTab === 'verification' && <AdminVerificationPanel />}
       </main>
 
       {/* Complete Appointment Confirmation Modal */}
