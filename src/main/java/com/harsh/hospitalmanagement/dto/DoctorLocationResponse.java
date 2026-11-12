@@ -13,5 +13,6 @@ public record DoctorLocationResponse(
         String postalCode,
         String contactPhone,
         BigDecimal inClinicFee,
-        boolean active) {
+        boolean active,
+        Integer lgdDistrictCode) {
 }

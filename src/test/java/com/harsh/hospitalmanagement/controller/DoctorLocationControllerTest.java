@@ -135,6 +135,47 @@ class DoctorLocationControllerTest {
     }
 
     @Test
+    void persistsDistrictAndClearsItWhenAnOlderClientChangesTheAddress() throws Exception {
+        String payload = clinicJson("District Clinic", "25.50");
+        mvc.perform(post(LOCATIONS, owner.getId()).session(ownerSession).with(csrf())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(clinicJson("District Clinic", "25.50", 157)))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.lgdDistrictCode").value(157));
+
+        var clinic = locations.findAllByDoctor_IdAndActiveTrueAndArchivedFalseOrderByIdAsc(owner.getId()).getFirst();
+        assertThat(clinic.getLgdDistrictCode()).isEqualTo(157);
+        mvc.perform(put(CLINIC, owner.getId(), clinic.getId()).session(ownerSession).with(csrf())
+                        .contentType(MediaType.APPLICATION_JSON).content(clinicJson("Renamed Clinic", "25.50")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.lgdDistrictCode").value(157));
+
+        mvc.perform(put(CLINIC, owner.getId(), clinic.getId()).session(ownerSession).with(csrf())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(payload.replace("10 Main Street", "20 Main Street")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.lgdDistrictCode").doesNotExist());
+        assertThat(locations.findById(clinic.getId()).orElseThrow().getLgdDistrictCode()).isNull();
+    }
+
+    @Test
+    void rejectsUnknownAndMismatchedDistrictCodes() throws Exception {
+        mvc.perform(post(LOCATIONS, owner.getId()).session(ownerSession).with(csrf())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(clinicJson("District Clinic", "25.50", 999999)))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value("Unknown LGD district code"));
+
+        mvc.perform(post(LOCATIONS, owner.getId()).session(ownerSession).with(csrf())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(clinicJson("District Clinic", "25.50", 157)
+                                .replace("Uttar Pradesh", "Maharashtra")))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value("LGD district does not belong to the clinic state"));
+        assertThat(locations.findAllByDoctor_IdAndActiveTrueAndArchivedFalseOrderByIdAsc(owner.getId())).isEmpty();
+    }
+
+    @Test
     void listsOnlyActiveUnarchivedClinicsBelongingToTheDoctor() throws Exception {
         var first = clinic(owner, "First clinic", true);
         clinic(owner, "Inactive clinic", false);
@@ -385,6 +426,10 @@ class DoctorLocationControllerTest {
     }
 
     private static String clinicJson(String name, String fee) {
+        return clinicJson(name, fee, null);
+    }
+
+    private static String clinicJson(String name, String fee, Integer districtCode) {
         return """
                 {
                   "clinicName": "%s",
@@ -395,9 +440,9 @@ class DoctorLocationControllerTest {
                   "postalCode": "208001",
                   "contactPhone": "5550100",
                   "inClinicFee": %s,
-                  "active": true
+                  "active": true%s
                 }
-                """.formatted(name, fee);
+                """.formatted(name, fee, districtCode == null ? "" : ",\n  \"lgdDistrictCode\": " + districtCode);
     }
 
     private static LocalAccount account(User user) {

@@ -1,0 +1,30 @@
+# India location autocomplete
+
+The public search uses a bundled Government of India LGD district directory and optional Google predictions. A suggestion describes a location. Doctor results continue to require a verified doctor with an eligible clinic or video offering. See the [LGD snapshot and refresh procedure](lgd-district-directory.md).
+
+## Google Cloud setup
+
+1. Use a dedicated Google Cloud project with billing enabled. Enable **Places API (New)** and, for **Use my location**, **Geocoding API**.
+2. Restrict the key to those APIs and the backend's outbound IP addresses where supported. Supply `GOOGLE_MAPS_API_KEY` to the Spring Boot process through your secret manager or launch environment. Keep the key out of Vite, browser code and source control.
+3. Set project quotas and billing alerts for Autocomplete, Place Details and Geocoding. Budget alerts notify you about spend. Configure quotas to constrain usage.
+4. Publish the application's terms and privacy policy with the Google disclosures required by Places API policy. Explain that the optional nearby action sends rounded coordinates to Google Geocoding through HMS. Keep location request bodies and provider request URLs out of persistent access logs.
+
+[Google key restrictions](https://developers.google.com/maps/api-security-best-practices) · [Cloud Billing budgets](https://cloud.google.com/billing/docs/how-to/budgets) · [Google Places policies and attribution](https://developers.google.com/maps/documentation/places/web-service/policies)
+
+## Requests and billing
+
+- The browser waits 350 ms and sends at least two characters to the existing `GET /api/v2/discovery/cities` route. Its response has up to 12 suggestions and a Google availability status. HMS calls Places API (New) twice with the same UUID v4 session token, once with the city collection and once with the region collection. Both calls restrict results to India. If either call fails, HMS keeps usable results from the other call and the LGD directory.
+- Selecting a Google prediction sends one CSRF-protected POST to HMS. HMS accepts only a place ID it offered for that token and requests Place Details using the same token with ID, types and address components. District and nearby selections skip Place Details. HMS retains only offered IDs and types in bounded, five-minute process memory and serves location responses with `Cache-Control: no-store`.
+- **Use my location** starts only on click. The browser permission prompt is followed by one CSRF-protected nearby lookup through HMS and the user chooses the returned city explicitly. HMS sends coordinates rounded to three decimal places to Google Geocoding and returns only an Indian locality. A secure browser context is required for geolocation.
+- The backend uses a 1.5 s connection timeout and a 3 s response timeout, with at most four concurrent upstream calls and 60 upstream attempts per rolling minute per process across the three operations. It makes no application-level retries. Rate-limit these public routes at the gateway and set Google project quotas across replicas because the HMS limit applies separately to each process. Keep autocomplete and resolution requests for a session on the same backend instance if running multiple replicas.
+
+[Autocomplete request format](https://developers.google.com/maps/documentation/places/web-service/place-autocomplete) · [Google reverse geocoding](https://developers.google.com/maps/documentation/geocoding/reverse-geocoding)
+
+For an account eligible for India pricing, Google currently lists **70,000 free monthly events per SKU** for Autocomplete Requests, Place Details Essentials and Geocoding. Above each cap, the first paid tier is **US$0.85 per 1,000 Autocomplete Requests** and **US$1.50 per 1,000** for each of Place Details Essentials and Geocoding, before applicable taxes. Two requests per debounced input update can consume the Autocomplete allowance in about **35,000 updates** if all requests are billable. A session terminated by Place Details Essentials bills its first 12 autocomplete requests and the Details call. Later autocomplete requests in that completed session are billed at the no-charge Session Usage SKU. Abandoned sessions are priced per request. Usage and eligibility are determined at the billing-account level. [India price list](https://developers.google.com/maps/billing-and-pricing/pricing-india) · [India eligibility](https://developers.google.com/maps/billing-and-pricing/india) · [Autocomplete session pricing](https://developers.google.com/maps/documentation/places/web-service/session-pricing)
+
+## Clinic matching and rollout
+
+- **CITY** matches clinic city and state, including common state aliases. **AREA** matches locality, confirmed parent city and state on the same clinic. Differences between stored clinic names and provider labels can reduce matches.
+- **DISTRICT** matches the clinic's explicit LGD district code. The additive [DISCO-02 migration](../database/disco-02-clinic-lgd-district.sql) adds a nullable column and leaves legacy clinics unclassified. Apply it only to an approved PostgreSQL target after DISCO-01 and before running the new backend with schema validation. The existing clinic management API accepts optional `lgdDistrictCode` for authorized managers to classify their clinics. It validates the code and state. No migration or clinic backfill is run by the autocomplete feature.
+- Start the backend through the existing Spring Boot launch configuration with `SPRING_JPA_HIBERNATE_DDL_AUTO=validate` after the approved schema is ready. Set the key in that launch environment to enable Google. Leave it unset for LGD-only operation.
+- From the frontend directory, use `npm run dev` for local development, `npm test` for tests and `npm run build` for production assets. Backend location tests run with `mvn '-Dtest=LocationSearchServiceTest,DiscoveryDoctorApiControllerTest,DoctorDiscoveryServiceTest,DoctorLocationControllerTest' test`. The Google tests use mocked responses and clinic tests use H2.

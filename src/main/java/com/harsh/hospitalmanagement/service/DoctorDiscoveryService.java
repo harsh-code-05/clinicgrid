@@ -36,6 +36,11 @@ public class DoctorDiscoveryService {
     }
 
     public List<DoctorDiscoveryResponse> discoverDoctors(Long specializationId, String city, String mode) {
+        return discoverDoctors(specializationId, city, mode, null);
+    }
+
+    public List<DoctorDiscoveryResponse> discoverDoctors(Long specializationId, String city, String mode,
+                                                          LocationSearchService.Filter location) {
         if (specializationId != null && specializationId <= 0) {
             throw new BadRequestException("Query parameter 'specializationId' must be a positive integer.");
         }
@@ -68,14 +73,29 @@ public class DoctorDiscoveryService {
             params.put("specializationId", specializationId);
         }
 
-        if (normalizedCity != null) {
+        if (location != null || normalizedCity != null) {
             jpql.append("AND EXISTS (SELECT 1 FROM DoctorLocation l WHERE l.doctor = d " +
-                    "AND l.active = true AND l.archived = false AND LOWER(TRIM(l.city)) = :city) ");
-            params.put("city", normalizedCity);
+                    "AND l.active = true AND l.archived = false ");
+            if (location != null && location.districtCode() != null) {
+                jpql.append("AND l.lgdDistrictCode = :districtCode ");
+                params.put("districtCode", location.districtCode());
+            } else {
+                jpql.append("AND LOWER(TRIM(l.city)) = :city ");
+                params.put("city", location == null ? normalizedCity : location.city());
+                if (location != null) {
+                    jpql.append("AND LOWER(TRIM(l.state)) IN :states ");
+                    params.put("states", location.states());
+                    if (location.locality() != null) {
+                        jpql.append("AND LOWER(TRIM(l.locality)) = :locality ");
+                        params.put("locality", location.locality());
+                    }
+                }
+            }
+            jpql.append(") ");
         }
 
         if (consultationMode == ConsultationMode.IN_CLINIC) {
-            if (normalizedCity == null) {
+            if (normalizedCity == null && location == null) {
                 jpql.append("AND EXISTS (SELECT 1 FROM DoctorLocation l WHERE l.doctor = d " +
                         "AND l.active = true AND l.archived = false) ");
             }
@@ -99,9 +119,10 @@ public class DoctorDiscoveryService {
 
         List<Long> doctorIds = doctors.stream().map(Doctor::getId).toList();
         Map<Long, List<DoctorLocation>> locationsByDoctor = locationRepository.findAllActiveByDoctorIds(doctorIds).stream()
+                .filter(clinic -> location == null || matchesLocation(clinic, location))
                 .collect(Collectors.groupingBy(l -> l.getDoctor().getId()));
 
-        return doctors.stream().map(doc -> {
+        return doctors.stream().filter(doc -> location == null || locationsByDoctor.containsKey(doc.getId())).map(doc -> {
             List<DoctorLocation> clinics = locationsByDoctor.getOrDefault(doc.getId(), List.of());
 
             List<ConsultationMode> modes = new ArrayList<>();
@@ -153,5 +174,14 @@ public class DoctorDiscoveryService {
                     clinicDtos
             );
         }).toList();
+    }
+
+    private boolean matchesLocation(DoctorLocation clinic, LocationSearchService.Filter location) {
+        if (location.districtCode() != null) {
+            return location.districtCode().equals(clinic.getLgdDistrictCode());
+        }
+        return location.city().equals(LgdDistrictDirectory.normalize(clinic.getCity()))
+                && location.states().contains(LgdDistrictDirectory.normalize(clinic.getState()))
+                && (location.locality() == null || location.locality().equals(LgdDistrictDirectory.normalize(clinic.getLocality())));
     }
 }

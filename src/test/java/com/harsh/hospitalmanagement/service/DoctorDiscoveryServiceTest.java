@@ -22,6 +22,7 @@ import org.springframework.test.annotation.DirtiesContext;
 
 import java.math.BigDecimal;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -239,5 +240,78 @@ class DoctorDiscoveryServiceTest {
         for (DoctorDiscoveryResponse resp : results) {
             assertThat(returnedIds).contains(resp.doctorId());
         }
+    }
+
+    @Test
+    void selectedCityMatchesCityAndStateAndReturnsOnlyMatchingClinics() {
+        createLocation(verifiedDoctorA, "Other city", "Central", "Pune", "Maharashtra", "411038", new BigDecimal("100.00"), true, false);
+        createLocation(verifiedDoctorA, "Mumbai alias", "Dadar", " MUMBAI ", " MH ", "400014", new BigDecimal("550.00"), true, false);
+        createLocation(verifiedDoctorB, "Different state", "Central", "Mumbai", "Goa", "403001", new BigDecimal("300.00"), true, false);
+
+        var location = new LocationSearchService.Filter("mumbai", Set.of("maharashtra", "mh"), null, null);
+        assertThat(discoveryService.discoverDoctors(null, null, null, location)).singleElement().satisfies(result -> {
+            assertThat(result.doctorId()).isEqualTo(verifiedDoctorA.getId());
+            assertThat(result.clinics()).extracting(DoctorDiscoveryResponse.ClinicLocationInfo::clinicName)
+                    .containsExactly("Heart Clinic Mumbai", "Mumbai alias");
+            assertThat(result.startingInClinicFee()).isEqualByComparingTo("550.00");
+        });
+    }
+
+    @Test
+    void selectedDistrictMatchesAssignedLgdCodeAcrossCities() {
+        var fee = new BigDecimal("500.00");
+        createLocation(verifiedDoctorA, "Kanpur Clinic", "Civil Lines", "Kanpur", "UP", "208001", fee, true, false)
+                .setLgdDistrictCode(157);
+        createLocation(verifiedDoctorA, "Bithoor Clinic", "Main Road", "Bithoor", "Uttar Pradesh", "209201", fee, true, false)
+                .setLgdDistrictCode(157);
+        createLocation(verifiedDoctorA, "Kanpur Dehat Clinic", "Main Road", "Akbarpur", "UP", "209101", fee, true, false)
+                .setLgdDistrictCode(156);
+        createLocation(verifiedDoctorB, "Unclassified clinic", "Central", "Kanpur Nagar", "UP", "208001", fee, true, false);
+
+        var location = new LocationSearchService.Filter(null, Set.of(), 157, null);
+        assertThat(discoveryService.discoverDoctors(null, null, "IN_CLINIC", location)).singleElement().satisfies(result -> {
+            assertThat(result.doctorId()).isEqualTo(verifiedDoctorA.getId());
+            assertThat(result.clinics()).extracting(DoctorDiscoveryResponse.ClinicLocationInfo::clinicName)
+                    .containsExactly("Kanpur Clinic", "Bithoor Clinic");
+        });
+    }
+
+    @Test
+    void selectedAreaMatchesExactLocalityAndCityAndStateOnOneClinic() {
+        var fee = new BigDecimal("100.00");
+        createLocation(verifiedDoctorA, "Locality prefix", "Bandra East", "Mumbai", "Maharashtra", "400051", fee, true, false);
+        createLocation(verifiedDoctorB, "Same area in another city", "Bandra", "Pune", "Maharashtra", "411038", fee, true, false);
+        createLocation(verifiedDoctorB, "Same area in another state", "Bandra", "Mumbai", "Goa", "403001", fee, true, false);
+        createLocation(verifiedDoctorB, "Another area in the city", "Andheri", "Mumbai", "Maharashtra", "400053", fee, true, false);
+
+        var location = new LocationSearchService.Filter("mumbai", Set.of("maharashtra", "mh"), null, "bandra");
+        assertThat(discoveryService.discoverDoctors(null, null, null, location)).singleElement().satisfies(result -> {
+            assertThat(result.doctorId()).isEqualTo(verifiedDoctorA.getId());
+            assertThat(result.clinics()).extracting(DoctorDiscoveryResponse.ClinicLocationInfo::clinicName)
+                    .containsExactly("Heart Clinic Mumbai");
+            assertThat(result.startingInClinicFee()).isEqualByComparingTo("600.00");
+        });
+
+        var nonexistentArea = new LocationSearchService.Filter("mumbai", Set.of("maharashtra"), null, "unknown area");
+        assertThat(discoveryService.discoverDoctors(null, null, null, nonexistentArea)).isEmpty();
+    }
+
+    @Test
+    void selectedAreaRespectsClinicAndDoctorEligibility() {
+        var fee = new BigDecimal("500.00");
+        createLocation(verifiedDoctorA, "Inactive clinic", "Colaba", "Mumbai", "Maharashtra", "400001", fee, false, false);
+        createLocation(verifiedDoctorB, "Archived clinic", "Colaba", "Mumbai", "Maharashtra", "400001", fee, true, true);
+        createLocation(unverifiedDoctor, "Unverified doctor clinic", "Colaba", "Mumbai", "Maharashtra", "400001", fee, true, false);
+        createLocation(rejectedDoctor, "Rejected doctor clinic", "Colaba", "Mumbai", "Maharashtra", "400001", fee, true, false);
+        Doctor formerDoctor = createDoctor("Former", "Doctor", cardiology, VerificationStatus.VERIFIED, null, 1);
+        formerDoctor.getUser().setRole(Role.PATIENT);
+        createLocation(formerDoctor, "Non-doctor clinic", "Colaba", "Mumbai", "Maharashtra", "400001", fee, true, false);
+
+        var location = new LocationSearchService.Filter("mumbai", Set.of("maharashtra"), null, "colaba");
+        assertThat(discoveryService.discoverDoctors(null, null, null, location)).isEmpty();
+
+        createLocation(verifiedDoctorA, "Available clinic", " COLABA ", "Mumbai", "Maharashtra", "400001", fee, true, false);
+        assertThat(discoveryService.discoverDoctors(null, null, null, location))
+                .extracting(DoctorDiscoveryResponse::doctorId).containsExactly(verifiedDoctorA.getId());
     }
 }

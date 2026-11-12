@@ -42,6 +42,9 @@ public class DoctorLocation {
     @Column(nullable = false, length = 120)
     private String state;
 
+    @Column(name = "lgd_district_code")
+    private Integer lgdDistrictCode;
+
     @Column(name = "postal_code", nullable = false, length = 20)
     private String postalCode;
 

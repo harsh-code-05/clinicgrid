@@ -50,7 +50,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 @DataJpaTest(properties = "spring.sql.init.mode=never", showSql = false)
 @AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
 @Import({AppointmentService.class, AppointmentSlotService.class, DoctorAvailabilityService.class,
-        DoctorLocationService.class, DoctorManagementAccess.class, AuditLogService.class})
+        DoctorLocationService.class, DoctorManagementAccess.class, AuditLogService.class, LgdDistrictDirectory.class})
 @DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)
 // Let the service proxies commit independently so each assertion reloads persisted state.
 @Transactional(propagation = Propagation.NOT_SUPPORTED)

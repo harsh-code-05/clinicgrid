@@ -72,7 +72,8 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 @AutoConfigureTestDatabase(connection = EmbeddedDatabaseConnection.H2,
         replace = AutoConfigureTestDatabase.Replace.ANY)
 @Import({DoctorAvailabilityService.class, AppointmentSlotService.class, AppointmentService.class,
-        DoctorLocationService.class, DoctorManagementAccess.class, DoctorVerificationService.class})
+        DoctorLocationService.class, DoctorManagementAccess.class, DoctorVerificationService.class,
+        LgdDistrictDirectory.class})
 @Transactional(propagation = Propagation.NOT_SUPPORTED)
 @DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)
 class ScheduleReconciliationTest {

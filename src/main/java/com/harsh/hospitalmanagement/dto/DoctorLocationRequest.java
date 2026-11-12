@@ -3,6 +3,7 @@ package com.harsh.hospitalmanagement.dto;
 import jakarta.validation.constraints.Digits;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Positive;
 import jakarta.validation.constraints.PositiveOrZero;
 import jakarta.validation.constraints.Size;
 
@@ -18,5 +19,6 @@ public record DoctorLocationRequest(
         @NotBlank @Size(max = 20) String postalCode,
         @NotBlank @Size(max = 32) String contactPhone,
         @NotNull @PositiveOrZero @Digits(integer = 10, fraction = 2) BigDecimal inClinicFee,
-        @NotNull Boolean active) {
+        @NotNull Boolean active,
+        @Positive Integer lgdDistrictCode) {
 }

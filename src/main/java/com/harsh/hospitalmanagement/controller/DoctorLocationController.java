@@ -85,12 +85,13 @@ public class DoctorLocationController {
     private static ClinicDetails toDetails(DoctorLocationRequest request) {
         return new ClinicDetails(request.clinicName(), request.addressLine1(), request.addressLine2(),
                 request.locality(), request.city(), request.state(), request.postalCode(), request.contactPhone(),
-                request.inClinicFee(), request.active());
+                request.inClinicFee(), request.active(), request.lgdDistrictCode());
     }
 
     private static DoctorLocationResponse toResponse(DoctorLocation clinic) {
         return new DoctorLocationResponse(clinic.getId(), clinic.getClinicName(), clinic.getAddressLine1(),
                 clinic.getAddressLine2(), clinic.getLocality(), clinic.getCity(), clinic.getState(),
-                clinic.getPostalCode(), clinic.getContactPhone(), clinic.getInClinicFee(), clinic.isActive());
+                clinic.getPostalCode(), clinic.getContactPhone(), clinic.getInClinicFee(), clinic.isActive(),
+                clinic.getLgdDistrictCode());
     }
 }

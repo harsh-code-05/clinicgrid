@@ -8,6 +8,7 @@ import com.harsh.hospitalmanagement.security.WithMvcSecurity;
 import com.harsh.hospitalmanagement.service.AppointmentService;
 import com.harsh.hospitalmanagement.service.AppointmentSlotService;
 import com.harsh.hospitalmanagement.service.DoctorDiscoveryService;
+import com.harsh.hospitalmanagement.service.LocationSearchService;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
@@ -49,6 +50,8 @@ class DiscoveryAppointmentControllerTest {
     private AppointmentService appointments;
     @MockitoBean
     private DoctorDiscoveryService discoveryService;
+    @MockitoBean
+    private LocationSearchService locationSearch;
 
     @Test
     void anonymousGetCanReadDiscoveryOffers() throws Exception {

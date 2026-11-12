@@ -208,6 +208,8 @@ public class SecurityConfig {
                         ).permitAll()
 
                         .requestMatchers(HttpMethod.GET, "/api/v2/discovery/**").permitAll()
+                        .requestMatchers(HttpMethod.POST, "/api/v2/discovery/locations/resolve",
+                                "/api/v2/discovery/locations/nearby").permitAll()
 
                         // Doctor application: public registration (unauthenticated)
                         .requestMatchers(
