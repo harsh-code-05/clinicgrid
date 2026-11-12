@@ -30,6 +30,32 @@ class DoctorManagementAccess {
         return requireManager(doctorId, authentication, false);
     }
 
+    User requireAdmin(Authentication authentication) {
+        User actor = users.findById(LocalAccount.require(authentication).id())
+                .orElseThrow(() -> new ForbiddenException("Admin access is required"));
+        if (actor.getRole() != Role.ADMIN || authentication.getAuthorities().stream()
+                .noneMatch(authority -> authority.getAuthority().equals("ROLE_ADMIN"))) {
+            throw new ForbiddenException("Admin access is required");
+        }
+        return actor;
+    }
+
+    Access requireAdminForUpdate(Long doctorId, Authentication authentication) {
+        User actor = users.findById(LocalAccount.require(authentication).id())
+                .orElseThrow(() -> new ForbiddenException("Doctor or admin access is required"));
+        Role role = actor.getRole();
+        if ((role != Role.DOCTOR && role != Role.ADMIN) || authentication.getAuthorities().stream()
+                .noneMatch(authority -> authority.getAuthority().equals("ROLE_" + role.name()))) {
+            throw new ForbiddenException("Doctor or admin access is required");
+        }
+        if (role != Role.ADMIN) {
+            throw new ForbiddenException("Only administrators may access raw verification evidence");
+        }
+        Doctor doctor = doctors.findByIdForUpdate(doctorId)
+                .orElseThrow(() -> new ResourceNotFoundException("Doctor not found"));
+        return new Access(doctor, actor);
+    }
+
     private Access requireManager(Long doctorId, Authentication authentication, boolean lockDoctor) {
         User actor = users.findById(LocalAccount.require(authentication).id())
                 .orElseThrow(() -> new ForbiddenException("Doctor or admin access is required"));

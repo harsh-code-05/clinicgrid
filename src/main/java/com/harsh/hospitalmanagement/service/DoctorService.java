@@ -1,19 +1,18 @@
 package com.harsh.hospitalmanagement.service;
 
 import com.harsh.hospitalmanagement.dto.DoctorRequest;
+import com.harsh.hospitalmanagement.dto.DoctorUpdateRequest;
 import com.harsh.hospitalmanagement.entity.Doctor;
 import com.harsh.hospitalmanagement.entity.Specialization;
 import com.harsh.hospitalmanagement.entity.User;
+import com.harsh.hospitalmanagement.enums.AuditEventType;
+import com.harsh.hospitalmanagement.exception.ResourceNotFoundException;
 import com.harsh.hospitalmanagement.repository.DoctorRepository;
 import com.harsh.hospitalmanagement.repository.SpecializationRepository;
 import com.harsh.hospitalmanagement.repository.UserRepository;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
-import com.harsh.hospitalmanagement.exception.ResourceNotFoundException;
-
-import com.harsh.hospitalmanagement.dto.DoctorUpdateRequest;
-import com.harsh.hospitalmanagement.enums.AuditEventType;
-import com.harsh.hospitalmanagement.service.AuditLogService;
 
 import java.util.List;
 
@@ -46,11 +45,35 @@ public class DoctorService {
                 .orElseThrow(() -> new ResourceNotFoundException("Doctor not found"));
     }
 
+    @Transactional(isolation = Isolation.READ_COMMITTED)
     public Doctor saveDoctor(Doctor doctor) {
-        return doctorRepository.save(doctor);
+        if (doctor == null) {
+            throw new IllegalArgumentException("Doctor must not be null");
+        }
+        if (doctor.getId() == null) {
+            return doctorRepository.save(doctor);
+        }
+
+        // Acquire the same pessimistic lock used by verification workflows and only copy editable profile fields.
+        Doctor existing = doctorRepository.findByIdForUpdate(doctor.getId())
+                .orElseThrow(() -> new ResourceNotFoundException("Doctor not found"));
+        existing.setFirstName(doctor.getFirstName());
+        existing.setLastName(doctor.getLastName());
+        existing.setQualification(doctor.getQualification());
+        existing.setExperience(doctor.getExperience());
+        existing.setBio(doctor.getBio());
+        existing.setGender(doctor.getGender());
+        existing.setProfilePhotoUrl(doctor.getProfilePhotoUrl());
+        if (doctor.getSpecialization() != null) {
+            existing.setSpecialization(doctor.getSpecialization());
+        }
+        if (doctor.getVideoConsultationFee() != null) {
+            existing.setVideoConsultationFee(doctor.getVideoConsultationFee());
+        }
+        return doctorRepository.save(existing);
     }
 
-    @Transactional
+    @Transactional(isolation = Isolation.READ_COMMITTED)
     public Doctor createDoctor(DoctorRequest request, String adminEmail) {
 
         User user = userRepository.findById(request.getUserId())
@@ -84,15 +107,15 @@ public class DoctorService {
         return savedDoctor;
     }
 
-    @Transactional
+    @Transactional(isolation = Isolation.READ_COMMITTED)
     public Doctor createDoctor(DoctorRequest request) {
         return createDoctor(request, "admin");
     }
 
-    @Transactional
+    @Transactional(isolation = Isolation.READ_COMMITTED)
     public Doctor updateDoctor(Long id, DoctorUpdateRequest request, String adminEmail) {
 
-        Doctor doctor = doctorRepository.findById(id)
+        Doctor doctor = doctorRepository.findByIdForUpdate(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Doctor not found"));
 
         Specialization specialization =

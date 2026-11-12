@@ -4,5 +4,6 @@ import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Size;
 
 public record DoctorVerificationRejectionRequest(
-        @NotBlank(message = "Rejection reason is required") @Size(max = 1000) String reason) {
+        @NotBlank(message = "Rejection reason is required") @Size(max = 1000) String reason,
+        @NotBlank(message = "Review version is required") @Size(max = 128) String reviewVersion) {
 }

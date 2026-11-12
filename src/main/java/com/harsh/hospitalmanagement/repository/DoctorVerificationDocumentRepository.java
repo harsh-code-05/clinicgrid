@@ -22,6 +22,9 @@ public interface DoctorVerificationDocumentRepository extends JpaRepository<Doct
     @Query("SELECT d FROM DoctorVerificationDocument d WHERE d.id = :id")
     Optional<DoctorVerificationDocument> findByIdForUpdate(@Param("id") UUID id);
 
+    @Query("SELECT d.doctor.id FROM DoctorVerificationDocument d WHERE d.id = :id")
+    Optional<Long> findDoctorIdById(@Param("id") UUID id);
+
     Optional<DoctorVerificationDocument> findByDoctorIdAndDocumentKindAndRetiredAtIsNull(
             Long doctorId, VerificationDocumentKind kind);
 

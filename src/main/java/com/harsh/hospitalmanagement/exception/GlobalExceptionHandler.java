@@ -1,13 +1,16 @@
 package com.harsh.hospitalmanagement.exception;
 
+import com.harsh.hospitalmanagement.config.SensitiveResponseHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.web.HttpMediaTypeNotSupportedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.security.core.AuthenticationException;
 import com.harsh.hospitalmanagement.exception.ForbiddenException;
 import org.springframework.web.multipart.MaxUploadSizeExceededException;
+import org.springframework.web.multipart.MultipartException;
 
 import java.time.LocalDateTime;
 import java.util.HashMap;
@@ -26,8 +29,7 @@ public class GlobalExceptionHandler {
         response.put("status", HttpStatus.NOT_FOUND.value());
         response.put("message", ex.getMessage());
 
-        return ResponseEntity
-                .status(HttpStatus.NOT_FOUND)
+        return SensitiveResponseHeaders.apply(ResponseEntity.status(HttpStatus.NOT_FOUND))
                 .body(response);
     }
 
@@ -53,8 +55,7 @@ public class GlobalExceptionHandler {
         response.put("message", "Validation failed");
         response.put("errors", errors);
 
-        return ResponseEntity
-                .status(HttpStatus.BAD_REQUEST)
+        return SensitiveResponseHeaders.apply(ResponseEntity.status(HttpStatus.BAD_REQUEST))
                 .body(response);
     }
 
@@ -68,8 +69,7 @@ public class GlobalExceptionHandler {
         response.put("status", HttpStatus.BAD_REQUEST.value());
         response.put("message", ex.getMessage());
 
-        return ResponseEntity
-                .status(HttpStatus.BAD_REQUEST)
+        return SensitiveResponseHeaders.apply(ResponseEntity.status(HttpStatus.BAD_REQUEST))
                 .body(response);
     }
 
@@ -83,8 +83,7 @@ public class GlobalExceptionHandler {
         response.put("status", HttpStatus.UNAUTHORIZED.value());
         response.put("message", "Invalid email or password");
 
-        return ResponseEntity
-                .status(HttpStatus.UNAUTHORIZED)
+        return SensitiveResponseHeaders.apply(ResponseEntity.status(HttpStatus.UNAUTHORIZED))
                 .body(response);
     }
 
@@ -98,8 +97,7 @@ public class GlobalExceptionHandler {
         response.put("status", HttpStatus.FORBIDDEN.value());
         response.put("message", ex.getMessage());
 
-        return ResponseEntity
-                .status(HttpStatus.FORBIDDEN)
+        return SensitiveResponseHeaders.apply(ResponseEntity.status(HttpStatus.FORBIDDEN))
                 .body(response);
     }
 
@@ -116,8 +114,7 @@ public class GlobalExceptionHandler {
             response.put("code", ex.getCode());
         }
 
-        return ResponseEntity
-                .status(HttpStatus.CONFLICT)
+        return SensitiveResponseHeaders.apply(ResponseEntity.status(HttpStatus.CONFLICT))
                 .body(response);
     }
 
@@ -131,8 +128,7 @@ public class GlobalExceptionHandler {
         response.put("status", HttpStatus.CONFLICT.value());
         response.put("message", "A patient profile already exists or conflicts with an existing record");
 
-        return ResponseEntity
-                .status(HttpStatus.CONFLICT)
+        return SensitiveResponseHeaders.apply(ResponseEntity.status(HttpStatus.CONFLICT))
                 .body(response);
     }
 
@@ -146,8 +142,55 @@ public class GlobalExceptionHandler {
         response.put("status", HttpStatus.PAYLOAD_TOO_LARGE.value());
         response.put("message", "Uploaded file exceeds the maximum allowed size of 5 MB");
 
-        return ResponseEntity
-                .status(HttpStatus.PAYLOAD_TOO_LARGE)
+        return SensitiveResponseHeaders.apply(ResponseEntity.status(HttpStatus.PAYLOAD_TOO_LARGE))
+                .body(response);
+    }
+
+    @ExceptionHandler(MultipartException.class)
+    public ResponseEntity<Map<String, Object>> handleMultipartException(
+            MultipartException ex) {
+
+        if (isSizeLimitExceeded(ex)) {
+            return handleMaxUploadSizeExceeded(
+                    ex instanceof MaxUploadSizeExceededException maxEx ? maxEx : null);
+        }
+
+        Map<String, Object> response = new HashMap<>();
+
+        response.put("timestamp", LocalDateTime.now());
+        response.put("status", HttpStatus.BAD_REQUEST.value());
+        response.put("message", "Invalid multipart upload request");
+
+        return SensitiveResponseHeaders.apply(ResponseEntity.status(HttpStatus.BAD_REQUEST))
+                .body(response);
+    }
+
+    private static boolean isSizeLimitExceeded(Throwable ex) {
+        Throwable cursor = ex;
+        for (int depth = 0; cursor != null && depth < 16; depth++) {
+            String name = cursor.getClass().getSimpleName();
+            if (cursor instanceof MaxUploadSizeExceededException
+                    || "SizeLimitExceededException".equals(name)
+                    || "FileSizeLimitExceededException".equals(name)
+                    || "SizeException".equals(name)) {
+                return true;
+            }
+            cursor = cursor.getCause();
+        }
+        return false;
+    }
+
+    @ExceptionHandler(HttpMediaTypeNotSupportedException.class)
+    public ResponseEntity<Map<String, Object>> handleMediaTypeNotSupported(
+            HttpMediaTypeNotSupportedException ex) {
+
+        Map<String, Object> response = new HashMap<>();
+
+        response.put("timestamp", LocalDateTime.now());
+        response.put("status", HttpStatus.UNSUPPORTED_MEDIA_TYPE.value());
+        response.put("message", "Unsupported content type for this request");
+
+        return SensitiveResponseHeaders.apply(ResponseEntity.status(HttpStatus.UNSUPPORTED_MEDIA_TYPE))
                 .body(response);
     }
 
@@ -161,8 +204,37 @@ public class GlobalExceptionHandler {
         response.put("status", HttpStatus.SERVICE_UNAVAILABLE.value());
         response.put("message", "Document storage service is temporarily unavailable");
 
-        return ResponseEntity
-                .status(HttpStatus.SERVICE_UNAVAILABLE)
+        return SensitiveResponseHeaders.apply(ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE))
+                .body(response);
+    }
+
+    @ExceptionHandler(DocumentIntegrityException.class)
+    public ResponseEntity<Map<String, Object>> handleDocumentIntegrity(
+            DocumentIntegrityException ex) {
+
+        Map<String, Object> response = new HashMap<>();
+
+        response.put("timestamp", LocalDateTime.now());
+        response.put("status", HttpStatus.INTERNAL_SERVER_ERROR.value());
+        response.put("code", "DOCUMENT_INTEGRITY_ERROR");
+        response.put("message", "Verification document could not be verified. Please contact an administrator.");
+
+        return SensitiveResponseHeaders.apply(ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR))
+                .body(response);
+    }
+
+    @ExceptionHandler(DocumentUploadException.class)
+    public ResponseEntity<Map<String, Object>> handleDocumentUpload(
+            DocumentUploadException ex) {
+
+        Map<String, Object> response = new HashMap<>();
+
+        response.put("timestamp", LocalDateTime.now());
+        response.put("status", HttpStatus.INTERNAL_SERVER_ERROR.value());
+        response.put("code", "DOCUMENT_UPLOAD_ERROR");
+        response.put("message", "Verification upload could not be processed. Please try again.");
+
+        return SensitiveResponseHeaders.apply(ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR))
                 .body(response);
     }
 

@@ -2,6 +2,8 @@ package com.harsh.hospitalmanagement.storage;
 
 import java.io.IOException;
 import java.nio.file.Path;
+import java.time.Instant;
+import java.util.List;
 
 /**
  * Filesystem operations scoped to a provisioned private root. Implementations must confine
@@ -21,4 +23,18 @@ interface PrivateFiles {
 
     /** Deletes the addressed file. Returns false if it is missing. */
     boolean delete(Path relative) throws IOException;
+
+    /**
+     * Enumerates regular files under {@code relativePrefix} in deterministic order after {@code cursor}.
+     */
+    default FileScanResult scanFiles(Path relativePrefix, String cursor, int maxEntries) throws IOException {
+        return FileScanResult.EMPTY;
+    }
+
+    record FileEntry(Path relativePath, Instant lastModifiedAt) {
+    }
+
+    record FileScanResult(List<FileEntry> entries, String nextCursor, boolean hasMore) {
+        static final FileScanResult EMPTY = new FileScanResult(List.of(), null, false);
+    }
 }

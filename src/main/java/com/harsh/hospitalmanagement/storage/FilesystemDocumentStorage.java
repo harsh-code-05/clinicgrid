@@ -4,11 +4,16 @@ import com.harsh.hospitalmanagement.service.DoctorVerificationService.DocumentKi
 import com.harsh.hospitalmanagement.storage.VerificationImageValidator.ValidatedImage;
 
 import java.io.IOException;
+import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.List;
 import java.util.UUID;
 import java.util.function.Supplier;
 
 final class FilesystemDocumentStorage implements DocumentStorage {
+
+    private static final Path VERIFICATION_PREFIX = Path.of("verification");
 
     private final PrivateFiles files;
     private final DocumentCipher cipher;
@@ -47,6 +52,24 @@ final class FilesystemDocumentStorage implements DocumentStorage {
     @Override
     public boolean delete(DocumentKey key) throws IOException {
         return files.delete(key.relativePath());
+    }
+
+    @Override
+    public DocumentScanPage listStoredDocuments(String cursor, int maxEntries) throws IOException {
+        PrivateFiles.FileScanResult scan = files.scanFiles(VERIFICATION_PREFIX, cursor, maxEntries);
+        if (scan == null || (scan.entries().isEmpty() && !scan.hasMore())) {
+            return DocumentScanPage.EMPTY;
+        }
+        List<StoredDocument> documents = new ArrayList<>(scan.entries().size());
+        for (PrivateFiles.FileEntry entry : scan.entries()) {
+            String keyStr = entry.relativePath().toString().replace('\\', '/');
+            try {
+                documents.add(new StoredDocument(DocumentKey.parse(keyStr), entry.lastModifiedAt()));
+            } catch (IllegalArgumentException ignored) {
+                // Skip non-canonical filenames without exposing internal paths.
+            }
+        }
+        return new DocumentScanPage(List.copyOf(documents), scan.nextCursor(), scan.hasMore());
     }
 
     private DocumentCipher.Decoded decrypt(DocumentKey key) throws IOException {

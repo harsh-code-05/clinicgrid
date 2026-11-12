@@ -15,6 +15,7 @@ import com.sun.jna.ptr.PointerByReference;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
+import java.nio.file.DirectoryStream;
 import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
@@ -25,10 +26,13 @@ import java.nio.file.attribute.AclEntry;
 import java.nio.file.attribute.AclEntryPermission;
 import java.nio.file.attribute.AclEntryType;
 import java.nio.file.attribute.FileAttribute;
+import java.time.Instant;
 import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.EnumSet;
 import java.util.HashSet;
 import java.util.List;
+import java.util.PriorityQueue;
 import java.util.Set;
 
 import static com.sun.jna.platform.win32.AccCtrl.SE_OBJECT_TYPE.SE_FILE_OBJECT;
@@ -143,6 +147,278 @@ final class WindowsPrivateFiles implements PrivateFiles {
             return true;
         } catch (NoSuchFileException missing) {
             return false;
+        }
+    }
+
+    @FunctionalInterface
+    interface DirectoryLister {
+        DirectoryStream<Path> open(Path dir) throws IOException;
+    }
+
+    @Override
+    public FileScanResult scanFiles(Path relativePrefix, String cursor, int maxEntries) throws IOException {
+        return scanFiles(relativePrefix, cursor, maxEntries, Math.max(maxEntries * 8, 2000),
+                Files::newDirectoryStream);
+    }
+
+    FileScanResult scanFiles(Path relativePrefix, String cursor, int maxEntries, int maxVisited) throws IOException {
+        return scanFiles(relativePrefix, cursor, maxEntries, maxVisited, Files::newDirectoryStream);
+    }
+
+    FileScanResult scanFiles(
+            Path relativePrefix,
+            String cursor,
+            int maxEntries,
+            int maxVisited,
+            DirectoryLister directoryLister
+    ) throws IOException {
+        if (maxEntries <= 0) {
+            throw new IllegalArgumentException("maxEntries must be positive");
+        }
+        if (maxVisited < 4) {
+            throw new IllegalArgumentException("maxVisited must be at least 4");
+        }
+        DirectoryLister lister = directoryLister != null ? directoryLister : Files::newDirectoryStream;
+        Path base = resolve(relativePrefix);
+        String prefixRel = relativePrefix.toString().replace('\\', '/');
+        String normalizedCursor = (cursor != null && !cursor.isBlank()) ? cursor.replace('\\', '/') : null;
+        try (var ignored = pinDirectories(base, false)) {
+            List<FileEntry> entries = new ArrayList<>(Math.min(maxEntries, 128));
+            var state = new ScanState(parseCursorSegments(prefixRel, normalizedCursor), maxEntries, maxVisited);
+            scanDirectory(base, prefixRel, 0, List.of(), entries, state, lister);
+            String nextCursor = state.hasMore ? state.formatCursor(prefixRel) : null;
+            if (entries.isEmpty() && !state.hasMore) {
+                return FileScanResult.EMPTY;
+            }
+            return new FileScanResult(List.copyOf(entries), nextCursor, state.hasMore);
+        } catch (NoSuchFileException missingPrefixDir) {
+            return FileScanResult.EMPTY;
+        }
+    }
+
+    private void scanDirectory(
+            Path dir,
+            String dirRel,
+            int depth,
+            List<String> dirSegs,
+            List<FileEntry> entries,
+            ScanState state,
+            DirectoryLister directoryLister
+    ) throws IOException {
+        if (depth > 2) {
+            return;
+        }
+        // Maintain a bounded max-heap of only (remainingVisited + 1) smallest unskipped names so enumeration
+        // memory stays O(maxVisited) regardless of directory size AND completeness never depends on OS order.
+        int cap = Math.max(1, state.maxVisited - state.visited) + 1;
+        PriorityQueue<String> smallestCandidates = new PriorityQueue<>(cap, (a, b) -> compareNtfsName(b, a));
+        try (DirectoryStream<Path> stream = directoryLister.open(dir)) {
+            for (Path child : stream) {
+                String name = child.getFileName().toString();
+                List<String> childSegs = appendSegment(dirSegs, name);
+                if (state.shouldSkip(childSegs)) {
+                    continue;
+                }
+                if (smallestCandidates.size() < cap) {
+                    smallestCandidates.offer(name);
+                } else if (compareNtfsName(name, smallestCandidates.peek()) < 0) {
+                    smallestCandidates.poll();
+                    smallestCandidates.offer(name);
+                }
+            }
+        } catch (NoSuchFileException missingDir) {
+            if (depth == 0) {
+                throw missingDir;
+            }
+            return;
+        }
+
+        List<String> orderedCandidates = new ArrayList<>(smallestCandidates);
+        orderedCandidates.sort(WindowsPrivateFiles::compareNtfsName);
+
+        for (String name : orderedCandidates) {
+            if (state.stop) {
+                return;
+            }
+            List<String> childSegs = appendSegment(dirSegs, name);
+            if (entries.size() >= state.maxEntries || state.visited >= state.maxVisited) {
+                state.hasMore = true;
+                state.stop = true;
+                return;
+            }
+            state.visited++;
+
+            String childRel = dirRel + "/" + name;
+            Path childPath = dir.resolve(name);
+            try (var handleCheck = openScanHandle(childPath)) {
+                if (handleCheck.isDirectory()) {
+                    if (depth >= 2) {
+                        state.markCompleted(childSegs, true);
+                        continue;
+                    }
+                    requirePrivateAcl(handleCheck.handle(), false);
+                    scanDirectory(childPath, childRel, depth + 1, childSegs, entries, state, directoryLister);
+                    if (!state.stop) {
+                        state.markCompleted(childSegs, true);
+                    }
+                } else {
+                    if (depth != 2) {
+                        state.markCompleted(childSegs, false);
+                        continue;
+                    }
+                    var standard = new WinBase.FILE_STANDARD_INFO();
+                    query(handleCheck.handle(), STANDARD_INFO, standard);
+                    if (standard.NumberOfLinks != 1) {
+                        throw new IOException("Private storage refuses hard-linked files");
+                    }
+                    var lastWrite = new WinBase.FILETIME();
+                    if (!Kernel32.INSTANCE.GetFileTime(handleCheck.handle(), null, null, lastWrite)) {
+                        throw winFailure("Unable to inspect private file timestamp",
+                                Kernel32.INSTANCE.GetLastError());
+                    }
+                    entries.add(new FileEntry(Path.of(childRel), lastWrite.toDate().toInstant()));
+                    state.markCompleted(childSegs, false);
+                }
+            } catch (NoSuchFileException disappeared) {
+                // Entry deleted concurrently between listing and pinning.
+                state.markCompleted(childSegs, false);
+            }
+        }
+    }
+
+    private static List<String> appendSegment(List<String> prefix, String segment) {
+        List<String> next = new ArrayList<>(prefix.size() + 1);
+        next.addAll(prefix);
+        next.add(segment);
+        return List.copyOf(next);
+    }
+
+    private static List<String> parseCursorSegments(String prefixRel, String normalizedCursor) {
+        if (normalizedCursor == null) {
+            return List.of();
+        }
+        String prefixWithSlash = prefixRel + "/";
+        if (!normalizedCursor.startsWith(prefixWithSlash)) {
+            return List.of();
+        }
+        String tail = normalizedCursor.substring(prefixWithSlash.length());
+        while (tail.endsWith("/")) {
+            tail = tail.substring(0, tail.length() - 1);
+        }
+        if (tail.isEmpty()) {
+            return List.of();
+        }
+        String[] parts = tail.split("/");
+        for (String part : parts) {
+            if (part.isEmpty()) {
+                return List.of();
+            }
+        }
+        return List.of(parts);
+    }
+
+    static int compareNtfsName(String a, String b) {
+        int len1 = a.length();
+        int len2 = b.length();
+        int lim = Math.min(len1, len2);
+        for (int i = 0; i < lim; i++) {
+            char c1 = Character.toUpperCase(a.charAt(i));
+            char c2 = Character.toUpperCase(b.charAt(i));
+            if (c1 != c2) {
+                return c1 - c2;
+            }
+        }
+        return len1 - len2;
+    }
+
+    private ScanHandle openScanHandle(Path path) throws IOException {
+        var handle = Kernel32.INSTANCE.CreateFile(path.toString(),
+                WinNT.FILE_READ_ATTRIBUTES | WinNT.READ_CONTROL,
+                WinNT.FILE_SHARE_READ, null, WinNT.OPEN_EXISTING,
+                WinNT.FILE_FLAG_BACKUP_SEMANTICS | WinNT.FILE_FLAG_OPEN_REPARSE_POINT, null);
+        if (handle == null || WinBase.INVALID_HANDLE_VALUE.equals(handle)) {
+            int error = Kernel32.INSTANCE.GetLastError();
+            if (error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND) {
+                throw new NoSuchFileException("Private scan entry is missing");
+            }
+            throw winFailure("Private scan entry is unavailable", error);
+        }
+        var pin = new Pin(handle);
+        try {
+            var tag = new WinBase.FILE_ATTRIBUTE_TAG_INFO();
+            query(handle, ATTRIBUTE_TAG_INFO, tag);
+            int attributes = tag.FileAttributes;
+            if ((attributes & WinNT.FILE_ATTRIBUTE_REPARSE_POINT) != 0
+                    || Kernel32.INSTANCE.GetFileType(handle) != WinNT.FILE_TYPE_DISK) {
+                throw new IOException("Private storage refuses reparse points or unexpected file types");
+            }
+            boolean isDirectory = (attributes & WinNT.FILE_ATTRIBUTE_DIRECTORY) != 0;
+            return new ScanHandle(pin, isDirectory);
+        } catch (IOException | RuntimeException failure) {
+            try {
+                pin.close();
+            } catch (IOException closeFailure) {
+                failure.addSuppressed(closeFailure);
+            }
+            throw failure;
+        }
+    }
+
+    private record ScanHandle(Pin pin, boolean isDirectory) implements AutoCloseable {
+        WinNT.HANDLE handle() {
+            return pin.handle();
+        }
+
+        @Override
+        public void close() throws IOException {
+            pin.close();
+        }
+    }
+
+    private static final class ScanState {
+        private final List<String> cursorSegments;
+        private final int maxEntries;
+        private final int maxVisited;
+        private int visited;
+        private boolean hasMore;
+        private boolean stop;
+        private List<String> lastCompletedSegments;
+        private boolean lastCompletedDirectory;
+
+        private ScanState(List<String> cursorSegments, int maxEntries, int maxVisited) {
+            this.cursorSegments = cursorSegments;
+            this.maxEntries = maxEntries;
+            this.maxVisited = maxVisited;
+        }
+
+        private boolean shouldSkip(List<String> nodeSegs) {
+            if (cursorSegments.isEmpty()) {
+                return false;
+            }
+            int common = Math.min(nodeSegs.size(), cursorSegments.size());
+            for (int i = 0; i < common; i++) {
+                int cmp = compareNtfsName(nodeSegs.get(i), cursorSegments.get(i));
+                if (cmp < 0) {
+                    return true;
+                }
+                if (cmp > 0) {
+                    return false;
+                }
+            }
+            return nodeSegs.size() >= cursorSegments.size();
+        }
+
+        private void markCompleted(List<String> segments, boolean directory) {
+            this.lastCompletedSegments = segments;
+            this.lastCompletedDirectory = directory;
+        }
+
+        private String formatCursor(String prefixRel) {
+            if (lastCompletedSegments == null || lastCompletedSegments.isEmpty()) {
+                return null;
+            }
+            return prefixRel + "/" + String.join("/", lastCompletedSegments)
+                    + (lastCompletedDirectory ? "/" : "");
         }
     }
 

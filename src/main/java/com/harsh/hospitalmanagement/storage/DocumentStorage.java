@@ -5,6 +5,8 @@ import com.harsh.hospitalmanagement.storage.VerificationImageValidator.Validated
 
 import java.io.IOException;
 import java.nio.file.Path;
+import java.time.Instant;
+import java.util.List;
 import java.util.UUID;
 import java.util.function.Supplier;
 
@@ -24,7 +26,22 @@ public interface DocumentStorage {
     /** Returns false for an absent document. Reference and retention checks belong to the caller. */
     boolean delete(DocumentKey key) throws IOException;
 
+    /**
+     * Enumerates stored document candidates after {@code cursor}, bounded by {@code maxEntries}.
+     * Used by retention reconciliation; callers must re-check catalog references under DB lock.
+     */
+    default DocumentScanPage listStoredDocuments(String cursor, int maxEntries) throws IOException {
+        return DocumentScanPage.EMPTY;
+    }
+
     record ReadDocument(String contentType, String downloadFilename, byte[] bytes) {
+    }
+
+    record StoredDocument(DocumentKey key, Instant lastModifiedAt) {
+    }
+
+    record DocumentScanPage(List<StoredDocument> documents, String nextCursor, boolean hasMore) {
+        public static final DocumentScanPage EMPTY = new DocumentScanPage(List.of(), null, false);
     }
 
     static DocumentStorage createFilesystemStorage(Path root, MasterKeyProvider keys, Supplier<UUID> versions) throws IOException {

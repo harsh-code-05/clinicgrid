@@ -1,5 +1,8 @@
 package com.harsh.hospitalmanagement.service;
 
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import com.harsh.hospitalmanagement.entity.Doctor;
 import com.harsh.hospitalmanagement.entity.DoctorVerificationDocument;
 import com.harsh.hospitalmanagement.entity.DoctorVerificationDocumentEvent;
@@ -20,11 +23,16 @@ import com.harsh.hospitalmanagement.storage.DocumentKey;
 import com.harsh.hospitalmanagement.storage.DocumentStorage;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.context.ApplicationContext;
+import org.springframework.scheduling.annotation.ScheduledAnnotationBeanPostProcessor;
+import org.springframework.scheduling.config.ScheduledTaskHolder;
 import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.io.IOException;
 import java.time.Duration;
@@ -62,6 +70,10 @@ class DoctorVerificationDocumentRetentionWorkerTest {
     @Autowired private SpecializationRepository specializationRepository;
     @Autowired private PlatformTransactionManager transactionManager;
     @Autowired private org.springframework.jdbc.core.JdbcTemplate jdbc;
+    @Autowired private ApplicationContext applicationContext;
+    @Autowired private ScheduledTaskHolder scheduledTaskHolder;
+    @Autowired private DoctorVerificationDocumentRetentionWorker configuredWorker;
+    @Autowired private DoctorVerificationDocumentService documentService;
 
     @MockitoBean private DocumentStorage documentStorage;
 
@@ -331,5 +343,367 @@ class DoctorVerificationDocumentRetentionWorkerTest {
         assertThat(worker.isPurgeEnabled()).isFalse();
         worker.scheduledPurge();
         assertThat(eventRepository.findByDoctorIdOrderByOccurredAtDescIdDesc(doctor.getId())).isEmpty();
+    }
+
+    @Test
+    void rejectsCorruptUnparseableStorageKeyWithoutPurgingOrLoggingSensitiveKey() throws IOException {
+        Instant now = Instant.now();
+        Instant retiredAt = now.minus(Duration.ofDays(31));
+        Instant purgeDeadline = now.minus(Duration.ofDays(1));
+        UUID docId = UUID.randomUUID();
+        String corruptKey = "../vault/secret-path-token/" + docId;
+
+        DoctorVerificationDocument doc = new DoctorVerificationDocument(
+                docId, doctor, VerificationDocumentKind.ID_PROOF, corruptKey,
+                "image/png", 1024, "i".repeat(64), retiredAt.minus(Duration.ofDays(5)));
+        doc.retire(retiredAt, purgeDeadline);
+        documentRepository.save(doc);
+
+        String logs = captureWorkerLogs(() -> {
+            int purged = worker.purgeExpiredDocuments(now, "trace-corrupt-key");
+            assertThat(purged).isEqualTo(0);
+        });
+
+        verify(documentStorage, never()).delete(any());
+        DoctorVerificationDocument unchanged = documentRepository.findById(docId).orElseThrow();
+        assertThat(unchanged.isPurged()).isFalse();
+        assertThat(unchanged.getPurgedAt()).isNull();
+        assertThat(eventRepository.findByDoctorIdOrderByOccurredAtDescIdDesc(doctor.getId())).isEmpty();
+
+        assertThat(logs).contains("INVALID_STORAGE_KEY").contains("trace-corrupt-key");
+        assertThat(logs).doesNotContain(corruptKey).doesNotContain("secret-path-token").doesNotContain(docId.toString());
+    }
+
+    @Test
+    void rejectsStorageKeyWithMismatchedDoctorIdWithoutPurgingOrLoggingKey() throws IOException {
+        Instant now = Instant.now();
+        Instant retiredAt = now.minus(Duration.ofDays(31));
+        Instant purgeDeadline = now.minus(Duration.ofDays(1));
+        UUID docId = UUID.randomUUID();
+        long otherDoctorId = doctor.getId() + 999L;
+        String mismatchedKey = new DocumentKey(otherDoctorId, DocumentKind.ID_PROOF, docId).toString();
+
+        DoctorVerificationDocument doc = new DoctorVerificationDocument(
+                docId, doctor, VerificationDocumentKind.ID_PROOF, mismatchedKey,
+                "image/png", 1024, "j".repeat(64), retiredAt.minus(Duration.ofDays(5)));
+        doc.retire(retiredAt, purgeDeadline);
+        documentRepository.save(doc);
+
+        String logs = captureWorkerLogs(() -> {
+            int purged = worker.purgeExpiredDocuments(now, "trace-doc-mismatch");
+            assertThat(purged).isEqualTo(0);
+        });
+
+        verify(documentStorage, never()).delete(any());
+        DoctorVerificationDocument unchanged = documentRepository.findById(docId).orElseThrow();
+        assertThat(unchanged.isPurged()).isFalse();
+        assertThat(unchanged.getPurgedAt()).isNull();
+        assertThat(eventRepository.findByDoctorIdOrderByOccurredAtDescIdDesc(doctor.getId())).isEmpty();
+
+        assertThat(logs).contains("STORAGE_KEY_DOCTOR_MISMATCH").contains("trace-doc-mismatch");
+        assertThat(logs).doesNotContain(mismatchedKey).doesNotContain(docId.toString());
+    }
+
+    @Test
+    void rejectsStorageKeyWithMismatchedKindWithoutPurgingOrLoggingKey() throws IOException {
+        Instant now = Instant.now();
+        Instant retiredAt = now.minus(Duration.ofDays(31));
+        Instant purgeDeadline = now.minus(Duration.ofDays(1));
+        UUID docId = UUID.randomUUID();
+        String mismatchedKindKey = new DocumentKey(doctor.getId(), DocumentKind.QUALIFICATION, docId).toString();
+
+        DoctorVerificationDocument doc = new DoctorVerificationDocument(
+                docId, doctor, VerificationDocumentKind.ID_PROOF, mismatchedKindKey,
+                "image/png", 1024, "k".repeat(64), retiredAt.minus(Duration.ofDays(5)));
+        doc.retire(retiredAt, purgeDeadline);
+        documentRepository.save(doc);
+
+        String logs = captureWorkerLogs(() -> {
+            int purged = worker.purgeExpiredDocuments(now, "trace-kind-mismatch");
+            assertThat(purged).isEqualTo(0);
+        });
+
+        verify(documentStorage, never()).delete(any());
+        DoctorVerificationDocument unchanged = documentRepository.findById(docId).orElseThrow();
+        assertThat(unchanged.isPurged()).isFalse();
+        assertThat(unchanged.getPurgedAt()).isNull();
+        assertThat(eventRepository.findByDoctorIdOrderByOccurredAtDescIdDesc(doctor.getId())).isEmpty();
+
+        assertThat(logs).contains("STORAGE_KEY_KIND_MISMATCH").contains("trace-kind-mismatch");
+        assertThat(logs).doesNotContain(mismatchedKindKey).doesNotContain(docId.toString());
+    }
+
+    @Test
+    void rejectsStorageKeyWithMismatchedUuidVersionWithoutPurgingOrLoggingKey() throws IOException {
+        Instant now = Instant.now();
+        Instant retiredAt = now.minus(Duration.ofDays(31));
+        Instant purgeDeadline = now.minus(Duration.ofDays(1));
+        UUID docId = UUID.randomUUID();
+        UUID differentVersion = UUID.randomUUID();
+        String mismatchedVersionKey = new DocumentKey(doctor.getId(), DocumentKind.ID_PROOF, differentVersion).toString();
+
+        DoctorVerificationDocument doc = new DoctorVerificationDocument(
+                docId, doctor, VerificationDocumentKind.ID_PROOF, mismatchedVersionKey,
+                "image/png", 1024, "l".repeat(64), retiredAt.minus(Duration.ofDays(5)));
+        doc.retire(retiredAt, purgeDeadline);
+        documentRepository.save(doc);
+
+        String logs = captureWorkerLogs(() -> {
+            int purged = worker.purgeExpiredDocuments(now, "trace-ver-mismatch");
+            assertThat(purged).isEqualTo(0);
+        });
+
+        verify(documentStorage, never()).delete(any());
+        DoctorVerificationDocument unchanged = documentRepository.findById(docId).orElseThrow();
+        assertThat(unchanged.isPurged()).isFalse();
+        assertThat(unchanged.getPurgedAt()).isNull();
+        assertThat(eventRepository.findByDoctorIdOrderByOccurredAtDescIdDesc(doctor.getId())).isEmpty();
+
+        assertThat(logs).contains("STORAGE_KEY_VERSION_MISMATCH").contains("trace-ver-mismatch");
+        assertThat(logs).doesNotContain(mismatchedVersionKey)
+                .doesNotContain(docId.toString())
+                .doesNotContain(differentVersion.toString());
+    }
+
+    @Test
+    void storageFailureRedactsSensitivePathsAndRemainsRetrySafe() throws IOException {
+        Instant now = Instant.now();
+        Instant retiredAt = now.minus(Duration.ofDays(31));
+        Instant purgeDeadline = now.minus(Duration.ofDays(1));
+        UUID docId = UUID.randomUUID();
+        DocumentKey key = new DocumentKey(doctor.getId(), DocumentKind.ID_PROOF, docId);
+        String storageKey = key.toString();
+
+        DoctorVerificationDocument doc = new DoctorVerificationDocument(
+                docId, doctor, VerificationDocumentKind.ID_PROOF, storageKey,
+                "image/png", 1024, "m".repeat(64), retiredAt.minus(Duration.ofDays(5)));
+        doc.retire(retiredAt, purgeDeadline);
+        documentRepository.save(doc);
+
+        when(documentStorage.delete(key))
+                .thenThrow(new IOException("C:\\hms-vault\\iv=deadbeef\\doc.enc: Access denied"))
+                .thenReturn(true);
+
+        // Attempt 1: storage delete fails -> leaves row unpurged, no DOCUMENT_PURGED event, redacted logs
+        String logs = captureWorkerLogs(() -> {
+            int firstAttempt = worker.purgeExpiredDocuments(now, "trace-io-fail");
+            assertThat(firstAttempt).isEqualTo(0);
+        });
+
+        DoctorVerificationDocument afterFailure = documentRepository.findById(docId).orElseThrow();
+        assertThat(afterFailure.isPurged()).isFalse();
+        assertThat(afterFailure.getPurgedAt()).isNull();
+        assertThat(eventRepository.findByDoctorIdOrderByOccurredAtDescIdDesc(doctor.getId())).isEmpty();
+
+        assertThat(logs).contains("STORAGE_DELETE_FAILED").contains("trace-io-fail").contains("java.io.IOException");
+        assertThat(logs).doesNotContain("hms-vault")
+                .doesNotContain("deadbeef")
+                .doesNotContain("Access denied")
+                .doesNotContain(storageKey)
+                .doesNotContain(docId.toString());
+
+        // Attempt 2: retry succeeds cleanly
+        int retryAttempt = worker.purgeExpiredDocuments(now, "trace-io-retry");
+        assertThat(retryAttempt).isEqualTo(1);
+
+        DoctorVerificationDocument afterRetry = documentRepository.findById(docId).orElseThrow();
+        assertThat(afterRetry.isPurged()).isTrue();
+        assertThat(afterRetry.getPurgedAt()).isNotNull();
+
+        List<DoctorVerificationDocumentEvent> events = eventRepository
+                .findByDoctorIdOrderByOccurredAtDescIdDesc(doctor.getId());
+        assertThat(events).hasSize(1);
+        assertThat(events.getFirst().getEventType()).isEqualTo(DocumentEventType.DOCUMENT_PURGED);
+        assertThat(events.getFirst().getOutcome()).isEqualTo(DocumentEventOutcome.SUCCESS);
+        assertThat(events.getFirst().getDetails()).doesNotContain(storageKey).doesNotContain(docId.toString());
+    }
+
+    @Test
+    void invalidCandidateInBatchDoesNotBlockValidCandidatePurgeAndFailClosedWhenStorageMissing() throws IOException {
+        Instant now = Instant.now();
+        Instant retiredAt = now.minus(Duration.ofDays(31));
+        Instant earlierDeadline = now.minus(Duration.ofDays(2));
+        Instant laterDeadline = now.minus(Duration.ofDays(1));
+
+        UUID badId = UUID.randomUUID();
+        DoctorVerificationDocument badDoc = new DoctorVerificationDocument(
+                badId, doctor, VerificationDocumentKind.ID_PROOF, "corrupt/key/" + badId,
+                "image/png", 1024, "n".repeat(64), retiredAt.minus(Duration.ofDays(5)));
+        badDoc.retire(retiredAt, earlierDeadline);
+        documentRepository.save(badDoc);
+
+        UUID goodId = UUID.randomUUID();
+        DocumentKey goodKey = new DocumentKey(doctor.getId(), DocumentKind.QUALIFICATION, goodId);
+        DoctorVerificationDocument goodDoc = new DoctorVerificationDocument(
+                goodId, doctor, VerificationDocumentKind.QUALIFICATION, goodKey.toString(),
+                "image/png", 1024, "o".repeat(64), retiredAt.minus(Duration.ofDays(5)));
+        goodDoc.retire(retiredAt, laterDeadline);
+        documentRepository.save(goodDoc);
+
+        when(documentStorage.delete(goodKey)).thenReturn(true);
+
+        int purged = worker.purgeExpiredDocuments(now, 10, "trace-mixed-batch");
+        assertThat(purged).isEqualTo(1);
+        verify(documentStorage).delete(goodKey);
+
+        assertThat(documentRepository.findById(badId).orElseThrow().isPurged()).isFalse();
+        assertThat(documentRepository.findById(goodId).orElseThrow().isPurged()).isTrue();
+
+        // Direct execution with disabled storage must fail closed without purging anything
+        UUID disabledId = UUID.randomUUID();
+        DoctorVerificationDocument disabledDoc = new DoctorVerificationDocument(
+                disabledId, doctor, VerificationDocumentKind.ID_PROOF,
+                new DocumentKey(doctor.getId(), DocumentKind.ID_PROOF, disabledId).toString(),
+                "image/png", 1024, "p".repeat(64), retiredAt.minus(Duration.ofDays(5)));
+        disabledDoc.retire(retiredAt, earlierDeadline);
+        documentRepository.save(disabledDoc);
+
+        var disabledWorker = new DoctorVerificationDocumentRetentionWorker(
+                doctorRepository, documentRepository, eventRepository, transactionManager, null);
+        assertThat(disabledWorker.purgeExpiredDocuments(now, "trace-no-storage")).isEqualTo(0);
+        assertThat(documentRepository.findById(disabledId).orElseThrow().isPurged()).isFalse();
+    }
+
+    @Test
+    void defaultSchedulerRegistersTaskInDisabledState() {
+        assertThat(applicationContext.getBeansOfType(ScheduledAnnotationBeanPostProcessor.class)).isNotEmpty();
+        assertThat(configuredWorker.isPurgeEnabled()).isFalse();
+        assertThat(scheduledTaskHolder.getScheduledTasks()).isEmpty();
+    }
+
+    @Test
+    void attachDocumentRollbackDeletesNewlyWrittenBlobAndPreservesExistingActiveDocument() throws Exception {
+        byte[] pngBytes = createTestPngBytes();
+        var validator = new com.harsh.hospitalmanagement.storage.VerificationImageValidator();
+        var validated = validator.validate("image/png", new java.io.ByteArrayInputStream(pngBytes));
+
+        UUID initialId = UUID.randomUUID();
+        DocumentKey initialKey = new DocumentKey(doctor.getId(), DocumentKind.ID_PROOF, initialId);
+        UUID failedReplaceId = UUID.randomUUID();
+        DocumentKey failedReplaceKey = new DocumentKey(doctor.getId(), DocumentKind.ID_PROOF, failedReplaceId);
+        UUID failedFreshId = UUID.randomUUID();
+        DocumentKey failedFreshKey = new DocumentKey(doctor.getId(), DocumentKind.QUALIFICATION, failedFreshId);
+
+        when(documentStorage.store(doctor.getId(), DocumentKind.ID_PROOF, validated))
+                .thenReturn(initialKey)
+                .thenReturn(failedReplaceKey);
+        when(documentStorage.store(doctor.getId(), DocumentKind.QUALIFICATION, validated))
+                .thenReturn(failedFreshKey);
+        when(documentStorage.delete(any(DocumentKey.class))).thenReturn(true);
+
+        // Commit initial active document cleanly.
+        documentService.attachDocument(
+                doctor.getId(), VerificationDocumentKind.ID_PROOF, validated,
+                doctor.getUser(), VerificationActorRole.DOCTOR, "attach-commit-1");
+        verify(documentStorage, never()).delete(initialKey);
+
+        // Rollback a replacement upload inside TransactionTemplate -> failedReplaceKey deleted, initialKey untouched.
+        new TransactionTemplate(transactionManager).executeWithoutResult(status -> {
+            documentService.attachDocument(
+                    doctor.getId(), VerificationDocumentKind.ID_PROOF, validated,
+                    doctor.getUser(), VerificationActorRole.DOCTOR, "attach-rollback-replace");
+            status.setRollbackOnly();
+        });
+        verify(documentStorage).delete(failedReplaceKey);
+        verify(documentStorage, never()).delete(initialKey);
+        assertThat(documentRepository.findByDoctorIdAndDocumentKindAndRetiredAtIsNull(
+                doctor.getId(), VerificationDocumentKind.ID_PROOF).orElseThrow().getStorageKey())
+                .isEqualTo(initialKey.toString());
+
+        // Rollback an initial upload for another kind -> failedFreshKey deleted, no catalog row left behind.
+        new TransactionTemplate(transactionManager).executeWithoutResult(status -> {
+            documentService.attachDocument(
+                    doctor.getId(), VerificationDocumentKind.QUALIFICATION, validated,
+                    doctor.getUser(), VerificationActorRole.DOCTOR, "attach-rollback-fresh");
+            status.setRollbackOnly();
+        });
+        verify(documentStorage).delete(failedFreshKey);
+        assertThat(documentRepository.findByDoctorIdAndDocumentKindAndRetiredAtIsNull(
+                doctor.getId(), VerificationDocumentKind.QUALIFICATION)).isEmpty();
+    }
+
+    @Test
+    void reconcileOrphanedDocumentsDeletesAgedUnreferencedBlobsRespectsGraceAndPaginatesCursor() throws Exception {
+        Instant now = Instant.now();
+
+        // Active referenced document in DB
+        UUID activeId = UUID.randomUUID();
+        DocumentKey activeKey = new DocumentKey(doctor.getId(), DocumentKind.ID_PROOF, activeId);
+        DoctorVerificationDocument activeDoc = new DoctorVerificationDocument(
+                activeId, doctor, VerificationDocumentKind.ID_PROOF, activeKey.toString(),
+                "image/png", 512, "b".repeat(64), now.minus(Duration.ofHours(5)));
+        documentRepository.saveAndFlush(activeDoc);
+
+        // Retired (unpurged) document in DB
+        UUID retiredId = UUID.randomUUID();
+        DocumentKey retiredKey = new DocumentKey(doctor.getId(), DocumentKind.QUALIFICATION, retiredId);
+        DoctorVerificationDocument retiredDoc = new DoctorVerificationDocument(
+                retiredId, doctor, VerificationDocumentKind.QUALIFICATION, retiredKey.toString(),
+                "image/png", 512, "c".repeat(64), now.minus(Duration.ofDays(5)));
+        retiredDoc.retire(now.minus(Duration.ofDays(1)), now.plus(Duration.ofDays(29)));
+        documentRepository.saveAndFlush(retiredDoc);
+
+        // Crash leftovers absent from DB
+        DocumentKey freshOrphan = new DocumentKey(doctor.getId(), DocumentKind.ID_PROOF, UUID.randomUUID());
+        DocumentKey agedOrphan = new DocumentKey(doctor.getId(), DocumentKind.QUALIFICATION, UUID.randomUUID());
+
+        when(documentStorage.exists(any(DocumentKey.class))).thenReturn(true);
+        when(documentStorage.delete(any(DocumentKey.class))).thenReturn(true);
+
+        when(documentStorage.listStoredDocuments(null, 2)).thenReturn(new DocumentStorage.DocumentScanPage(
+                List.of(
+                        new DocumentStorage.StoredDocument(freshOrphan, now.minus(Duration.ofMinutes(10))),
+                        new DocumentStorage.StoredDocument(activeKey, now.minus(Duration.ofHours(4)))),
+                "cursor-page-2",
+                true));
+        when(documentStorage.listStoredDocuments("cursor-page-2", 2)).thenReturn(new DocumentStorage.DocumentScanPage(
+                List.of(
+                        new DocumentStorage.StoredDocument(agedOrphan, now.minus(Duration.ofHours(3))),
+                        new DocumentStorage.StoredDocument(retiredKey, now.minus(Duration.ofDays(5)))),
+                null,
+                false));
+
+        var reconcileWorker = new DoctorVerificationDocumentRetentionWorker(
+                doctorRepository, documentRepository, eventRepository,
+                transactionManager, documentStorage, documentService);
+
+        int page1Deleted = reconcileWorker.reconcileOrphanedDocuments(2, Duration.ofHours(1), "reconcile-p1");
+        assertThat(page1Deleted).isZero();
+        verify(documentStorage, never()).delete(freshOrphan);
+        verify(documentStorage, never()).delete(activeKey);
+
+        int page2Deleted = reconcileWorker.reconcileOrphanedDocuments(2, Duration.ofHours(1), "reconcile-p2");
+        assertThat(page2Deleted).isEqualTo(1);
+        verify(documentStorage).delete(agedOrphan);
+        verify(documentStorage, never()).delete(retiredKey);
+    }
+
+    private static byte[] createTestPngBytes() throws IOException {
+        var image = new java.awt.image.BufferedImage(4, 4, java.awt.image.BufferedImage.TYPE_INT_RGB);
+        var bytes = new java.io.ByteArrayOutputStream();
+        try (var stream = new javax.imageio.stream.MemoryCacheImageOutputStream(bytes)) {
+            javax.imageio.ImageIO.write(image, "png", stream);
+        }
+        return bytes.toByteArray();
+    }
+
+    private static String captureWorkerLogs(Runnable action) {
+        Logger workerLogger = (Logger) LoggerFactory.getLogger(DoctorVerificationDocumentRetentionWorker.class);
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        workerLogger.addAppender(appender);
+        try {
+            action.run();
+        } finally {
+            workerLogger.detachAppender(appender);
+        }
+        var out = new StringBuilder();
+        for (ILoggingEvent event : appender.list) {
+            out.append(event.getFormattedMessage()).append('\n');
+            if (event.getThrowableProxy() != null) {
+                out.append(event.getThrowableProxy().getMessage()).append('\n');
+            }
+        }
+        return out.toString();
     }
 }

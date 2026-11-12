@@ -7,6 +7,7 @@ import com.harsh.hospitalmanagement.security.LoginRateLimiter;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletRequestWrapper;
 import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
@@ -33,14 +34,22 @@ import org.springframework.security.web.authentication.session.SessionAuthentica
 import org.springframework.security.web.context.HttpSessionSecurityContextRepository;
 import org.springframework.security.web.context.SecurityContextRepository;
 import org.springframework.security.web.csrf.CsrfAuthenticationStrategy;
+import org.springframework.security.web.csrf.CsrfToken;
 import org.springframework.security.web.csrf.CsrfTokenRepository;
+import org.springframework.security.web.csrf.CsrfTokenRequestHandler;
 import org.springframework.security.web.csrf.HttpSessionCsrfTokenRepository;
+import org.springframework.security.web.csrf.XorCsrfTokenRequestAttributeHandler;
 import org.springframework.security.web.savedrequest.HttpSessionRequestCache;
 import org.springframework.security.web.servlet.util.matcher.PathPatternRequestMatcher;
 import org.springframework.web.filter.OncePerRequestFilter;
 
 import java.io.IOException;
+import java.util.Collections;
+import java.util.Enumeration;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.function.Supplier;
 
 @Configuration
 public class SecurityConfig {
@@ -113,7 +122,7 @@ public class SecurityConfig {
                     if (apiRequests.matches(request)) {
                         response.setStatus(HttpStatus.UNAUTHORIZED.value());
                         response.setContentType(MediaType.APPLICATION_JSON_VALUE);
-                        response.setHeader("Cache-Control", "no-store");
+                        SensitiveResponseHeaders.apply(response);
                         response.getWriter().write("{\"message\":\"Not authenticated\"}");
                     } else {
                         browserLogin.commence(request, response, failure);
@@ -123,13 +132,15 @@ public class SecurityConfig {
                         // sendError would redispatch to the protected /error route and redirect anonymous API callers.
                         response.setStatus(HttpStatus.FORBIDDEN.value());
                         response.setContentType(MediaType.APPLICATION_JSON_VALUE);
-                        response.setHeader("Cache-Control", "no-store");
+                        SensitiveResponseHeaders.apply(response);
                         response.getWriter().write("{\"status\":403,\"message\":\"Access denied\"}");
                     } else {
                         browserAccessDenied.handle(request, response, failure);
                     }
                 }))
-                .csrf(csrf -> csrf.csrfTokenRepository(csrfTokens))
+                .csrf(csrf -> csrf
+                        .csrfTokenRepository(csrfTokens)
+                        .csrfTokenRequestHandler(headerOnlyMultipartCsrfHandler()))
                 .logout(logout -> logout
                         .logoutRequestMatcher(PathPatternRequestMatcher.withDefaults()
                                 .matcher(HttpMethod.POST, "/api/auth/logout"))
@@ -345,5 +356,56 @@ public class SecurityConfig {
                 );
 
         return http.build();
+    }
+
+    private static CsrfTokenRequestHandler headerOnlyMultipartCsrfHandler() {
+        var delegate = new XorCsrfTokenRequestAttributeHandler();
+        return new CsrfTokenRequestHandler() {
+            @Override
+            public void handle(HttpServletRequest request, HttpServletResponse response, Supplier<CsrfToken> csrfToken) {
+                delegate.handle(request, response, csrfToken);
+            }
+
+            @Override
+            public String resolveCsrfTokenValue(HttpServletRequest request, CsrfToken csrfToken) {
+                if (isMultipartRequest(request)) {
+                    // Reject parameter-only CSRF tokens on multipart uploads so Tomcat never calls parseParts() inside CsrfFilter.
+                    return delegate.resolveCsrfTokenValue(new HeaderOnlyCsrfRequestWrapper(request), csrfToken);
+                }
+                return delegate.resolveCsrfTokenValue(request, csrfToken);
+            }
+        };
+    }
+
+    private static boolean isMultipartRequest(HttpServletRequest request) {
+        String contentType = request.getContentType();
+        return contentType != null && contentType.stripLeading().toLowerCase(Locale.ROOT).startsWith("multipart/");
+    }
+
+    private static final class HeaderOnlyCsrfRequestWrapper extends HttpServletRequestWrapper {
+
+        private HeaderOnlyCsrfRequestWrapper(HttpServletRequest request) {
+            super(request);
+        }
+
+        @Override
+        public String getParameter(String name) {
+            return null;
+        }
+
+        @Override
+        public String[] getParameterValues(String name) {
+            return null;
+        }
+
+        @Override
+        public Enumeration<String> getParameterNames() {
+            return Collections.emptyEnumeration();
+        }
+
+        @Override
+        public Map<String, String[]> getParameterMap() {
+            return Collections.emptyMap();
+        }
     }
 }

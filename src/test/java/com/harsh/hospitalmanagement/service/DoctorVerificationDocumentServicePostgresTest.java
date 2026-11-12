@@ -11,12 +11,15 @@ import com.harsh.hospitalmanagement.enums.Role;
 import com.harsh.hospitalmanagement.enums.VerificationActorRole;
 import com.harsh.hospitalmanagement.enums.VerificationDocumentKind;
 import com.harsh.hospitalmanagement.enums.VerificationStatus;
+import com.harsh.hospitalmanagement.exception.BadRequestException;
 import com.harsh.hospitalmanagement.exception.ConflictException;
+import com.harsh.hospitalmanagement.exception.DocumentIntegrityException;
 import com.harsh.hospitalmanagement.exception.ForbiddenException;
 import com.harsh.hospitalmanagement.exception.ResourceNotFoundException;
 import com.harsh.hospitalmanagement.repository.DoctorRepository;
 import com.harsh.hospitalmanagement.repository.DoctorVerificationDocumentEventRepository;
 import com.harsh.hospitalmanagement.repository.DoctorVerificationDocumentRepository;
+import com.harsh.hospitalmanagement.repository.DoctorVerificationHistoryRepository;
 import com.harsh.hospitalmanagement.repository.SpecializationRepository;
 import com.harsh.hospitalmanagement.repository.UserRepository;
 import com.harsh.hospitalmanagement.security.LocalAccount;
@@ -98,6 +101,7 @@ class DoctorVerificationDocumentServicePostgresTest {
     @Autowired private DoctorRepository doctors;
     @Autowired private DoctorVerificationDocumentRepository documents;
     @Autowired private DoctorVerificationDocumentEventRepository events;
+    @Autowired private DoctorVerificationHistoryRepository historyRepository;
     @Autowired private UserRepository users;
     @Autowired private SpecializationRepository specializations;
     @Autowired private DoctorManagementAccess access;
@@ -442,33 +446,43 @@ class DoctorVerificationDocumentServicePostgresTest {
         var doc = service.attachDocument(
                 doctor1.getId(), VerificationDocumentKind.ID_PROOF, pngImage, auth(doctorUser1), "corr-101"
         );
+        String unverifiedVersion = reviewVersionFor(doctor1);
 
         // 1. Doctor attempting to read own document must be denied with ForbiddenException
-        assertThatThrownBy(() -> service.readDocument(doctor1.getId(), VerificationDocumentKind.ID_PROOF, auth(doctorUser1), "corr-102"))
+        assertThatThrownBy(() -> service.readDocument(
+                doctor1.getId(), VerificationDocumentKind.ID_PROOF, unverifiedVersion, auth(doctorUser1), "corr-102"))
                 .isInstanceOf(ForbiddenException.class)
                 .hasMessageContaining("Only administrators may access raw verification evidence");
 
         // 2. Patient attempting to read document must be denied with ForbiddenException
-        assertThatThrownBy(() -> service.readDocument(doctor1.getId(), VerificationDocumentKind.ID_PROOF, auth(patientUser), "corr-103"))
+        assertThatThrownBy(() -> service.readDocument(
+                doctor1.getId(), VerificationDocumentKind.ID_PROOF, unverifiedVersion, auth(patientUser), "corr-103"))
                 .isInstanceOf(ForbiddenException.class);
 
         // 3. Admin attempting to read document when doctor is in UNVERIFIED status must be denied with ConflictException
-        assertThatThrownBy(() -> service.readDocument(doctor1.getId(), VerificationDocumentKind.ID_PROOF, auth(adminUser), "corr-104"))
+        assertThatThrownBy(() -> service.readDocument(
+                doctor1.getId(), VerificationDocumentKind.ID_PROOF, unverifiedVersion, auth(adminUser), "corr-104"))
                 .isInstanceOf(ConflictException.class)
                 .hasMessageContaining("when the doctor is under review");
 
         // Transition doctor to SUBMITTED -> Admin read still denied
+        doctor1 = doctors.findById(doctor1.getId()).orElseThrow();
         doctor1.setVerificationStatus(VerificationStatus.SUBMITTED);
         doctor1 = doctors.saveAndFlush(doctor1);
-        assertThatThrownBy(() -> service.readDocument(doctor1.getId(), VerificationDocumentKind.ID_PROOF, auth(adminUser), "corr-105"))
+        String submittedVersion = reviewVersionFor(doctor1);
+        assertThatThrownBy(() -> service.readDocument(
+                doctor1.getId(), VerificationDocumentKind.ID_PROOF, submittedVersion, auth(adminUser), "corr-105"))
                 .isInstanceOf(ConflictException.class)
                 .hasMessageContaining("when the doctor is under review");
 
         // Transition doctor to UNDER_REVIEW -> Admin read succeeds!
+        doctor1 = doctors.findById(doctor1.getId()).orElseThrow();
         doctor1.setVerificationStatus(VerificationStatus.UNDER_REVIEW);
         doctor1 = doctors.saveAndFlush(doctor1);
+        String underReviewVersion = reviewVersionFor(doctor1);
 
-        var readByAdmin = service.readDocument(doctor1.getId(), VerificationDocumentKind.ID_PROOF, auth(adminUser), "corr-admin-106");
+        var readByAdmin = service.readDocument(
+                doctor1.getId(), VerificationDocumentKind.ID_PROOF, underReviewVersion, auth(adminUser), "corr-admin-106");
         assertThat(readByAdmin.bytes()).isEqualTo(pngImage.copyBytes());
 
         // Verify ADMIN_ACCESS_GRANTED event was committed to database before returning
@@ -512,11 +526,14 @@ class DoctorVerificationDocumentServicePostgresTest {
         );
 
         // Transition doctor to UNDER_REVIEW so Admin can retrieve document
+        doctor1 = doctors.findById(doctor1.getId()).orElseThrow();
         doctor1.setVerificationStatus(VerificationStatus.UNDER_REVIEW);
         doctor1 = doctors.saveAndFlush(doctor1);
+        String underReviewVersion = reviewVersionFor(doctor1);
 
         // Valid read and decrypted bytes by Admin
-        var readResult = service.readDocument(doctor1.getId(), VerificationDocumentKind.QUALIFICATION, auth(adminUser), "c-read");
+        var readResult = service.readDocument(
+                doctor1.getId(), VerificationDocumentKind.QUALIFICATION, underReviewVersion, auth(adminUser), "c-read");
         assertThat(readResult.contentType()).isEqualTo("image/jpeg");
         assertThat(readResult.bytes()).isEqualTo(jpegImage.copyBytes());
 
@@ -531,8 +548,9 @@ class DoctorVerificationDocumentServicePostgresTest {
         Files.write(filePath, fileBytes);
 
         // Reading tampered file must fail closed
-        assertThatThrownBy(() -> service.readDocument(doctor1.getId(), VerificationDocumentKind.QUALIFICATION, auth(adminUser), "c-tampered"))
-                .isInstanceOf(IllegalStateException.class)
+        assertThatThrownBy(() -> service.readDocument(
+                doctor1.getId(), VerificationDocumentKind.QUALIFICATION, underReviewVersion, auth(adminUser), "c-tampered"))
+                .isInstanceOf(DocumentIntegrityException.class)
                 .hasMessageContaining("Failed to read or authenticate verification document from storage");
     }
 
@@ -738,6 +756,63 @@ class DoctorVerificationDocumentServicePostgresTest {
 
         Doctor reloadedAfterFail = doctors.findById(doctor1.getId()).orElseThrow();
         assertThat(reloadedAfterFail.getIdProofDocumentPath()).isEqualTo(initialDoc.getStorageKey());
+    }
+
+    @Test
+    void test19_readDocumentEnforcesReviewVersionCatalogAndChecksumIntegrity() throws IOException {
+        var doc = service.attachDocument(
+                doctor1.getId(), VerificationDocumentKind.ID_PROOF, pngImage, auth(doctorUser1), "c-19-attach"
+        );
+        String staleVersion = reviewVersionFor(doctor1);
+
+        doctor1 = doctors.findById(doctor1.getId()).orElseThrow();
+        doctor1.setVerificationStatus(VerificationStatus.UNDER_REVIEW);
+        doctor1 = doctors.saveAndFlush(doctor1);
+        String validVersion = reviewVersionFor(doctor1);
+
+        // Missing or blank reviewVersion rejected
+        assertThatThrownBy(() -> service.readDocument(
+                doctor1.getId(), VerificationDocumentKind.ID_PROOF, " ", auth(adminUser), "c-19-blank"))
+                .isInstanceOf(BadRequestException.class);
+
+        // Stale reviewVersion rejected before audit
+        assertThatThrownBy(() -> service.readDocument(
+                doctor1.getId(), VerificationDocumentKind.ID_PROOF, staleVersion, auth(adminUser), "c-19-stale"))
+                .isInstanceOfSatisfying(ConflictException.class,
+                        ex -> assertThat(ex.getCode()).isEqualTo("STALE_REVIEW_VERSION"));
+        assertThat(events.findByDoctorIdOrderByOccurredAtDescIdDesc(doctor1.getId()))
+                .noneMatch(e -> e.getEventType() == DocumentEventType.ADMIN_ACCESS_GRANTED);
+
+        // Missing file on disk rejected with ConflictException without leaking storageKey
+        DocumentKey key = DocumentKey.parse(doc.getStorageKey());
+        Path filePath = protectedRoot.resolve("verification").resolve(Long.toString(doctor1.getId()))
+                .resolve("id-proof").resolve(key.version().toString());
+        byte[] savedEncrypted = Files.readAllBytes(filePath);
+        Files.delete(filePath);
+
+        assertThatThrownBy(() -> service.readDocument(
+                doctor1.getId(), VerificationDocumentKind.ID_PROOF, validVersion, auth(adminUser), "c-19-missing"))
+                .isInstanceOf(ConflictException.class)
+                .satisfies(ex -> assertThat(ex.getMessage()).doesNotContain(doc.getStorageKey()));
+
+        // Restore file, corrupt catalog checksum -> DocumentIntegrityException without leaking key/checksum
+        Files.write(filePath, savedEncrypted);
+        String wrongChecksum = "0".repeat(64);
+        jdbc.update("UPDATE doctor_verification_documents SET checksum = ? WHERE id = ?", wrongChecksum, doc.getId());
+
+        assertThatThrownBy(() -> service.readDocument(
+                doctor1.getId(), VerificationDocumentKind.ID_PROOF, validVersion, auth(adminUser), "c-19-checksum"))
+                .isInstanceOf(DocumentIntegrityException.class)
+                .satisfies(ex -> assertThat(ex.getMessage())
+                        .doesNotContain(doc.getStorageKey())
+                        .doesNotContain(wrongChecksum)
+                        .doesNotContain(doc.getChecksum()));
+    }
+
+    private String reviewVersionFor(Doctor target) {
+        Doctor reloaded = doctors.findById(target.getId()).orElseThrow();
+        return DoctorVerificationService.computeReviewVersion(
+                reloaded, historyRepository.findByDoctor_IdOrderByOccurredAtDescIdDesc(reloaded.getId()));
     }
 
     private User createUser(String email, Role role) {

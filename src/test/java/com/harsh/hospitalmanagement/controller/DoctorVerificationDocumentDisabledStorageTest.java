@@ -34,6 +34,7 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -52,7 +53,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)
 class DoctorVerificationDocumentDisabledStorageTest {
 
-    private static final String UPLOAD_URI = "/api/doctors/{doctorId}/verification/documents/id-proof";
+    private static final String UPLOAD_URI = "/api/doctors/{doctorId}/verification/documents/{kind}";
 
     @Autowired private MockMvc mvc;
     @Autowired private DoctorRepository doctors;
@@ -62,6 +63,7 @@ class DoctorVerificationDocumentDisabledStorageTest {
 
     private Doctor doctor;
     private MockHttpSession doctorSession;
+    private MockHttpSession patientSession;
     private byte[] validPngBytes;
 
     @BeforeEach
@@ -77,25 +79,54 @@ class DoctorVerificationDocumentDisabledStorageTest {
         user.setRole(Role.DOCTOR);
         user = users.save(user);
 
+        var patient = new User();
+        patient.setEmail("pat-" + UUID.randomUUID() + "@example.invalid");
+        patient.setRole(Role.PATIENT);
+        patient = users.save(patient);
+
         doctor = new Doctor();
         doctor.setUser(user);
         doctor.setSpecialization(spec);
         doctor = doctors.save(doctor);
 
         doctorSession = session(user);
+        patientSession = session(patient);
     }
 
     @Test
-    void uploadWhenStorageDisabledReturns503() throws Exception {
+    void uploadWhenStorageDisabledReturns503ForHyphenAndUnderscoreKindsWithSecurityEnforcedFirst() throws Exception {
         MockMultipartFile file = new MockMultipartFile("file", "license.png", "image/png", validPngBytes);
 
-        mvc.perform(multipart(UPLOAD_URI, doctor.getId())
+        // Unauthenticated and unauthorized requests must fail security (401/403) before preflight reveals 503.
+        mvc.perform(multipart(UPLOAD_URI, doctor.getId(), "id-proof")
+                        .file(file)
+                        .with(csrf().asHeader()))
+                .andExpect(status().isUnauthorized());
+
+        mvc.perform(multipart(UPLOAD_URI, doctor.getId(), "id_proof")
+                        .file(file)
+                        .session(patientSession)
+                        .with(csrf().asHeader()))
+                .andExpect(status().isForbidden());
+
+        // Authorized owning doctor receives 503 with no-store header for both hyphen and underscore forms and contextPath.
+        mvc.perform(multipart(UPLOAD_URI, doctor.getId(), "id-proof")
                         .file(file)
                         .session(doctorSession)
-                        .with(csrf()))
+                        .with(csrf().asHeader()))
                 .andExpect(status().isServiceUnavailable())
+                .andExpect(header().string("Cache-Control", "no-store"))
                 .andExpect(jsonPath("$.status").value(503))
                 .andExpect(jsonPath("$.message").value("Document storage service is temporarily unavailable"));
+
+        mvc.perform(multipart("/hms/api/doctors/" + doctor.getId() + "/verification/documents/id_proof")
+                        .file(file)
+                        .contextPath("/hms")
+                        .session(doctorSession)
+                        .with(csrf().asHeader()))
+                .andExpect(status().isServiceUnavailable())
+                .andExpect(header().string("Cache-Control", "no-store"))
+                .andExpect(jsonPath("$.status").value(503));
 
         // Verify no catalog record created
         assertThat(documents.findByDoctorIdOrderByCreatedAtDesc(doctor.getId())).isEmpty();

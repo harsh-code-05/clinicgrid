@@ -1,8 +1,11 @@
 package com.harsh.hospitalmanagement.controller;
 
+import com.harsh.hospitalmanagement.config.SensitiveResponseHeaders;
+import com.harsh.hospitalmanagement.dto.DoctorVerificationApprovalRequest;
 import com.harsh.hospitalmanagement.dto.DoctorVerificationCredentialsRequest;
 import com.harsh.hospitalmanagement.dto.DoctorVerificationRejectionRequest;
 import com.harsh.hospitalmanagement.dto.DoctorVerificationResponse;
+import com.harsh.hospitalmanagement.dto.DoctorVerificationReviewRequest;
 import com.harsh.hospitalmanagement.enums.VerificationStatus;
 import com.harsh.hospitalmanagement.exception.BadRequestException;
 import com.harsh.hospitalmanagement.service.DoctorVerificationService;
@@ -32,8 +35,10 @@ public class DoctorVerificationController {
     }
 
     @GetMapping
-    public DoctorVerificationResponse getVerification(@PathVariable long doctorId, Authentication authentication) {
-        return verificationService.getVerification(positiveId(doctorId), authentication);
+    public ResponseEntity<DoctorVerificationResponse> getVerification(
+            @PathVariable long doctorId, Authentication authentication) {
+        return SensitiveResponseHeaders.apply(ResponseEntity.ok())
+                .body(verificationService.getVerification(positiveId(doctorId), authentication));
     }
 
     @PostMapping("/credentials")
@@ -43,7 +48,7 @@ public class DoctorVerificationController {
             Authentication authentication) {
         verificationService.updateRegistrationDetails(positiveId(doctorId), request.registrationNumber(),
                 request.medicalCouncil(), request.registrationYear(), authentication);
-        return ResponseEntity.noContent().build();
+        return SensitiveResponseHeaders.apply(ResponseEntity.noContent()).build();
     }
 
     @PostMapping("/submit")
@@ -52,13 +57,20 @@ public class DoctorVerificationController {
     }
 
     @PostMapping("/review")
-    public ResponseEntity<Void> review(@PathVariable long doctorId, Authentication authentication) {
-        return transition(doctorId, VerificationStatus.UNDER_REVIEW, null, authentication);
+    public ResponseEntity<Void> review(
+            @PathVariable long doctorId,
+            @Valid @RequestBody DoctorVerificationReviewRequest request,
+            Authentication authentication) {
+        return transition(doctorId, VerificationStatus.UNDER_REVIEW, null,
+                request.reviewVersion().strip(), authentication);
     }
 
     @PostMapping("/approve")
-    public ResponseEntity<Void> approve(@PathVariable long doctorId, Authentication authentication) {
-        return transition(doctorId, VerificationStatus.VERIFIED, null, authentication);
+    public ResponseEntity<Void> approve(
+            @PathVariable long doctorId,
+            @Valid @RequestBody DoctorVerificationApprovalRequest request,
+            Authentication authentication) {
+        return transition(doctorId, VerificationStatus.VERIFIED, null, request.reviewVersion().strip(), authentication);
     }
 
     @PostMapping("/reject")
@@ -66,23 +78,32 @@ public class DoctorVerificationController {
             @PathVariable long doctorId,
             @Valid @RequestBody DoctorVerificationRejectionRequest request,
             Authentication authentication) {
-        return transition(doctorId, VerificationStatus.REJECTED, request.reason().strip(), authentication);
+        return transition(doctorId, VerificationStatus.REJECTED, request.reason().strip(),
+                request.reviewVersion().strip(), authentication);
     }
 
     @ExceptionHandler(HttpMessageNotReadableException.class)
     ResponseEntity<Map<String, Object>> invalidBody() {
-        return ResponseEntity.badRequest().body(Map.of("status", 400, "message", "Invalid verification request body"));
+        return SensitiveResponseHeaders.apply(ResponseEntity.badRequest())
+                .body(Map.of("status", 400, "message", "Invalid verification request body"));
     }
 
     @ExceptionHandler(MethodArgumentTypeMismatchException.class)
     ResponseEntity<Map<String, Object>> invalidDoctorId() {
-        return ResponseEntity.badRequest().body(Map.of("status", 400, "message", "Doctor ID must be a positive integer"));
+        return SensitiveResponseHeaders.apply(ResponseEntity.badRequest())
+                .body(Map.of("status", 400, "message", "Doctor ID must be a positive integer"));
     }
 
     private ResponseEntity<Void> transition(long doctorId, VerificationStatus next, String notes,
                                             Authentication authentication) {
         verificationService.transition(positiveId(doctorId), next, notes, authentication);
-        return ResponseEntity.noContent().build();
+        return SensitiveResponseHeaders.apply(ResponseEntity.noContent()).build();
+    }
+
+    private ResponseEntity<Void> transition(long doctorId, VerificationStatus next, String notes,
+                                            String expectedReviewVersion, Authentication authentication) {
+        verificationService.transition(positiveId(doctorId), next, notes, expectedReviewVersion, authentication);
+        return SensitiveResponseHeaders.apply(ResponseEntity.noContent()).build();
     }
 
     private static long positiveId(long doctorId) {

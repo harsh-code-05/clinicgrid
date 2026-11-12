@@ -6,6 +6,7 @@ import com.harsh.hospitalmanagement.entity.Appointment;
 import com.harsh.hospitalmanagement.entity.AppointmentSlot;
 import com.harsh.hospitalmanagement.entity.Doctor;
 import com.harsh.hospitalmanagement.entity.DoctorAvailability;
+import com.harsh.hospitalmanagement.entity.DoctorVerificationDocument;
 import com.harsh.hospitalmanagement.entity.DoctorVerificationHistory;
 import com.harsh.hospitalmanagement.entity.Patient;
 import com.harsh.hospitalmanagement.entity.Specialization;
@@ -15,13 +16,18 @@ import com.harsh.hospitalmanagement.enums.ConsultationMode;
 import com.harsh.hospitalmanagement.enums.Role;
 import com.harsh.hospitalmanagement.enums.SlotStatus;
 import com.harsh.hospitalmanagement.enums.VerificationActorRole;
+import com.harsh.hospitalmanagement.enums.VerificationDocumentKind;
 import com.harsh.hospitalmanagement.enums.VerificationStatus;
 import com.harsh.hospitalmanagement.exception.BadRequestException;
 import com.harsh.hospitalmanagement.exception.ConflictException;
 import com.harsh.hospitalmanagement.exception.ForbiddenException;
 import com.harsh.hospitalmanagement.repository.AppointmentRepository;
 import com.harsh.hospitalmanagement.repository.AppointmentSlotRepository;
+import com.harsh.hospitalmanagement.repository.DoctorVerificationDocumentRepository;
 import com.harsh.hospitalmanagement.security.LocalAccount;
+import com.harsh.hospitalmanagement.storage.DocumentKey;
+import com.harsh.hospitalmanagement.storage.DocumentStorage;
+import com.harsh.hospitalmanagement.storage.VerificationImageValidator;
 import jakarta.persistence.EntityManager;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -40,6 +46,12 @@ import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionTemplate;
 
+import javax.imageio.ImageIO;
+import javax.imageio.stream.MemoryCacheImageOutputStream;
+import java.awt.Color;
+import java.awt.image.BufferedImage;
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalTime;
@@ -83,11 +95,15 @@ class ScheduleReconciliationTest {
     @Autowired
     private AppointmentRepository appointmentRepository;
     @Autowired
+    private DoctorVerificationDocumentRepository documentRepository;
+    @Autowired
     private EntityManager entityManager;
     @Autowired
     private PlatformTransactionManager transactionManager;
     @MockitoBean
     private AuditLogService auditLogService;
+    @MockitoBean
+    private DocumentStorage documentStorage;
 
     @Test
     void clinicEditReissuesSlotAndRejectsTheOldOfferWithoutChangingBookedSnapshots() {
@@ -136,13 +152,37 @@ class ScheduleReconciliationTest {
     }
 
     @Test
-    void verificationRecordsPrincipalDerivedActorsAndRestrictsDocumentAccess() {
+    void verificationRecordsPrincipalDerivedActorsAndRestrictsDocumentAccess() throws java.io.IOException {
         Doctor doctor = doctor();
         var owner = authentication(doctor.getUser());
         var otherDoctor = authentication(doctor().getUser());
         var admin = authentication(transaction(() -> user(Role.ADMIN)));
-        String idKey = "verification/" + doctor.getId() + "/id-proof/" + UUID.randomUUID();
-        String qualificationKey = "verification/" + doctor.getId() + "/qualification/" + UUID.randomUUID();
+        UUID idUuid = UUID.randomUUID();
+        UUID qualUuid = UUID.randomUUID();
+        String idKey = new DocumentKey(doctor.getId(), DoctorVerificationService.DocumentKind.ID_PROOF, idUuid).toString();
+        String qualificationKey = new DocumentKey(
+                doctor.getId(), DoctorVerificationService.DocumentKind.QUALIFICATION, qualUuid).toString();
+        var pngImage = new BufferedImage(8, 8, BufferedImage.TYPE_INT_RGB);
+        pngImage.setRGB(3, 3, Color.CYAN.getRGB());
+        var pngOut = new ByteArrayOutputStream();
+        try (var imgStream = new MemoryCacheImageOutputStream(pngOut)) {
+            ImageIO.write(pngImage, "png", imgStream);
+        }
+        var validatedPng = new VerificationImageValidator().validate(
+                "image/png", new ByteArrayInputStream(pngOut.toByteArray()));
+        org.mockito.Mockito.when(documentStorage.exists(org.mockito.ArgumentMatchers.any())).thenReturn(true);
+        org.mockito.Mockito.when(documentStorage.read(org.mockito.ArgumentMatchers.any())).thenAnswer(invocation ->
+                new DocumentStorage.ReadDocument("image/png", "evidence.png", validatedPng.copyBytes()));
+        transaction(() -> {
+            Doctor attached = entityManager.find(Doctor.class, doctor.getId());
+            documentRepository.save(new DoctorVerificationDocument(
+                    idUuid, attached, VerificationDocumentKind.ID_PROOF, idKey,
+                    validatedPng.contentType(), validatedPng.size(), validatedPng.sha256Hex(), java.time.Instant.now()));
+            documentRepository.save(new DoctorVerificationDocument(
+                    qualUuid, attached, VerificationDocumentKind.QUALIFICATION, qualificationKey,
+                    validatedPng.contentType(), validatedPng.size(), validatedPng.sha256Hex(), java.time.Instant.now()));
+            return null;
+        });
         verificationService.replaceCredentials(doctor.getId(),
                 new DoctorVerificationService.Credentials("REG-42", "Council", 2020, idKey, qualificationKey), owner);
 
@@ -153,8 +193,10 @@ class ScheduleReconciliationTest {
                 doctor.getId(), DoctorVerificationService.DocumentKind.ID_PROOF, admin)).isEqualTo(idKey);
 
         verificationService.transition(doctor.getId(), VerificationStatus.SUBMITTED, null, owner);
-        verificationService.transition(doctor.getId(), VerificationStatus.UNDER_REVIEW, null, admin);
-        verificationService.transition(doctor.getId(), VerificationStatus.VERIFIED, null, admin);
+        String submittedVersion = verificationService.getVerification(doctor.getId(), admin).reviewVersion();
+        verificationService.transition(doctor.getId(), VerificationStatus.UNDER_REVIEW, null, submittedVersion, admin);
+        String reviewVersion = verificationService.getVerification(doctor.getId(), admin).reviewVersion();
+        verificationService.transition(doctor.getId(), VerificationStatus.VERIFIED, null, reviewVersion, admin);
 
         transaction(() -> {
             assertThat(entityManager.find(Doctor.class, doctor.getId()).getVerificationStatus())

@@ -6,6 +6,7 @@ import com.harsh.hospitalmanagement.entity.Doctor;
 import com.harsh.hospitalmanagement.entity.Specialization;
 import com.harsh.hospitalmanagement.entity.User;
 import com.harsh.hospitalmanagement.enums.AuditEventType;
+import com.harsh.hospitalmanagement.enums.VerificationStatus;
 import com.harsh.hospitalmanagement.exception.ResourceNotFoundException;
 import com.harsh.hospitalmanagement.repository.DoctorRepository;
 import com.harsh.hospitalmanagement.repository.SpecializationRepository;
@@ -108,11 +109,17 @@ class DoctorServiceTest {
     void updateDoctor_shouldSaveAndLogAuditEvent_whenValid() {
         Doctor doctor = new Doctor();
         doctor.setId(5L);
+        doctor.setVerificationStatus(VerificationStatus.VERIFIED);
+        doctor.setRegistrationNumber("REG-KEEP");
+        doctor.setMedicalCouncil("Keep Council");
+        doctor.setRegistrationYear(2019);
+        doctor.setIdProofDocumentPath("verification/5/id-proof/11111111-1111-1111-1111-111111111111");
+        doctor.setQualificationDocumentPath("verification/5/qualification/22222222-2222-2222-2222-222222222222");
 
         Specialization spec = new Specialization();
         spec.setId(2L);
 
-        when(doctorRepository.findById(5L)).thenReturn(Optional.of(doctor));
+        when(doctorRepository.findByIdForUpdate(5L)).thenReturn(Optional.of(doctor));
         when(specializationRepository.findById(2L)).thenReturn(Optional.of(spec));
         when(doctorRepository.save(any(Doctor.class))).thenAnswer(inv -> inv.getArgument(0));
 
@@ -125,7 +132,14 @@ class DoctorServiceTest {
 
         Doctor updated = doctorService.updateDoctor(5L, req, "admin@test.com");
 
+        verify(doctorRepository).findByIdForUpdate(5L);
         assertThat(updated.getFirstName()).isEqualTo("Jane");
+        assertThat(updated.getVerificationStatus()).isEqualTo(VerificationStatus.VERIFIED);
+        assertThat(updated.getRegistrationNumber()).isEqualTo("REG-KEEP");
+        assertThat(updated.getMedicalCouncil()).isEqualTo("Keep Council");
+        assertThat(updated.getRegistrationYear()).isEqualTo(2019);
+        assertThat(updated.getIdProofDocumentPath()).isEqualTo("verification/5/id-proof/11111111-1111-1111-1111-111111111111");
+        assertThat(updated.getQualificationDocumentPath()).isEqualTo("verification/5/qualification/22222222-2222-2222-2222-222222222222");
         verify(auditLogService).logEvent(
                 eq(AuditEventType.ADMIN_UPDATED_DOCTOR),
                 eq("admin@test.com"),
@@ -138,8 +152,49 @@ class DoctorServiceTest {
     }
 
     @Test
+    void saveDoctor_shouldLockAndPreserveVerificationFieldsWhenDetachedUpdateGiven() {
+        Doctor existing = new Doctor();
+        existing.setId(7L);
+        existing.setVerificationStatus(VerificationStatus.VERIFIED);
+        existing.setRegistrationNumber("REG-VERIFIED");
+        existing.setMedicalCouncil("National Council");
+        existing.setRegistrationYear(2021);
+        existing.setIdProofDocumentPath("verification/7/id-proof/11111111-1111-1111-1111-111111111111");
+        existing.setQualificationDocumentPath("verification/7/qualification/22222222-2222-2222-2222-222222222222");
+
+        Doctor staleDetached = new Doctor();
+        staleDetached.setId(7L);
+        staleDetached.setFirstName("UpdatedFirst");
+        staleDetached.setLastName("UpdatedLast");
+        staleDetached.setQualification("DM");
+        staleDetached.setExperience(15);
+        staleDetached.setBio("New bio");
+        staleDetached.setVerificationStatus(VerificationStatus.UNVERIFIED);
+        staleDetached.setRegistrationNumber(null);
+        staleDetached.setMedicalCouncil(null);
+        staleDetached.setRegistrationYear(null);
+        staleDetached.setIdProofDocumentPath(null);
+        staleDetached.setQualificationDocumentPath(null);
+
+        when(doctorRepository.findByIdForUpdate(7L)).thenReturn(Optional.of(existing));
+        when(doctorRepository.save(existing)).thenReturn(existing);
+
+        Doctor saved = doctorService.saveDoctor(staleDetached);
+
+        verify(doctorRepository).findByIdForUpdate(7L);
+        assertThat(saved.getFirstName()).isEqualTo("UpdatedFirst");
+        assertThat(saved.getBio()).isEqualTo("New bio");
+        assertThat(saved.getVerificationStatus()).isEqualTo(VerificationStatus.VERIFIED);
+        assertThat(saved.getRegistrationNumber()).isEqualTo("REG-VERIFIED");
+        assertThat(saved.getMedicalCouncil()).isEqualTo("National Council");
+        assertThat(saved.getRegistrationYear()).isEqualTo(2021);
+        assertThat(saved.getIdProofDocumentPath()).isEqualTo("verification/7/id-proof/11111111-1111-1111-1111-111111111111");
+        assertThat(saved.getQualificationDocumentPath()).isEqualTo("verification/7/qualification/22222222-2222-2222-2222-222222222222");
+    }
+
+    @Test
     void updateDoctor_shouldNotLogAuditEvent_whenDoctorNotFound() {
-        when(doctorRepository.findById(99L)).thenReturn(Optional.empty());
+        when(doctorRepository.findByIdForUpdate(99L)).thenReturn(Optional.empty());
 
         DoctorUpdateRequest req = new DoctorUpdateRequest();
 

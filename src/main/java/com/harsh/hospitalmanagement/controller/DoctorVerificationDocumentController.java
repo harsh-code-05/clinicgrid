@@ -1,16 +1,22 @@
 package com.harsh.hospitalmanagement.controller;
 
+import com.harsh.hospitalmanagement.config.SensitiveResponseHeaders;
+import com.harsh.hospitalmanagement.config.VerificationDocumentUploadRoute;
 import com.harsh.hospitalmanagement.dto.DoctorVerificationDocumentResponse;
 import com.harsh.hospitalmanagement.entity.DoctorVerificationDocument;
 import com.harsh.hospitalmanagement.enums.VerificationDocumentKind;
 import com.harsh.hospitalmanagement.exception.BadRequestException;
 import com.harsh.hospitalmanagement.exception.DocumentStorageUnavailableException;
+import com.harsh.hospitalmanagement.exception.DocumentUploadException;
 import com.harsh.hospitalmanagement.service.DoctorVerificationDocumentService;
 import com.harsh.hospitalmanagement.storage.DocumentStorage;
 import com.harsh.hospitalmanagement.storage.VerificationImageValidator;
+import jakarta.servlet.http.HttpServletRequest;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.http.CacheControl;
 import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
@@ -26,18 +32,21 @@ import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 import org.springframework.web.multipart.MaxUploadSizeExceededException;
 import org.springframework.web.multipart.MultipartFile;
+import org.springframework.web.multipart.MultipartHttpServletRequest;
 import org.springframework.web.multipart.support.MissingServletRequestPartException;
+import org.springframework.web.util.WebUtils;
 
+import java.io.FilterInputStream;
 import java.io.IOException;
 import java.io.InputStream;
-import java.net.URI;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 
 @RestController
-@RequestMapping("/api/doctors/{doctorId}/verification/documents")
+@RequestMapping(VerificationDocumentUploadRoute.BASE_PATH)
 public class DoctorVerificationDocumentController {
+
+    private static final Logger log = LoggerFactory.getLogger(DoctorVerificationDocumentController.class);
 
     private final DoctorVerificationDocumentService documentService;
     private final VerificationImageValidator imageValidator;
@@ -50,37 +59,46 @@ public class DoctorVerificationDocumentController {
         this.imageValidator = imageValidator != null ? imageValidator : new VerificationImageValidator();
     }
 
-    @PostMapping(value = "/{kind}", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    @PostMapping(value = VerificationDocumentUploadRoute.KIND_SUBPATH, consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     public ResponseEntity<DoctorVerificationDocumentResponse> uploadDocument(
-            @PathVariable long doctorId,
+            @PathVariable String doctorId,
             @PathVariable String kind,
-            @RequestParam("file") MultipartFile file,
             @RequestHeader(value = "X-Correlation-ID", required = false) String correlationId,
-            org.springframework.web.multipart.MultipartHttpServletRequest request,
+            HttpServletRequest rawRequest,
             Authentication authentication
-    ) {
-        long validDoctorId = positiveId(doctorId);
-        VerificationDocumentKind docKind = parseKind(kind);
+    ) throws MissingServletRequestPartException {
+        long validDoctorId = VerificationDocumentUploadRoute.parsePositiveDoctorId(doctorId);
+        VerificationDocumentKind docKind = VerificationDocumentUploadRoute.parseKind(kind);
 
-        if (request != null) {
-            long totalSize = request.getMultiFileMap().values().stream()
-                    .flatMap(List::stream)
-                    .mapToLong(MultipartFile::getSize)
-                    .sum();
-            if (totalSize > VerificationImageValidator.MAX_REQUEST_BYTES) {
-                throw new MaxUploadSizeExceededException(VerificationImageValidator.MAX_REQUEST_BYTES);
-            }
-        }
-
-        if (file != null && file.getSize() > VerificationImageValidator.MAX_FILE_BYTES) {
-            throw new MaxUploadSizeExceededException(VerificationImageValidator.MAX_FILE_BYTES);
-        }
+        // Enforce ownership and draft status BEFORE touching lazy multipart parts
+        documentService.verifyUploadEligible(validDoctorId, authentication);
 
         if (!documentService.isStorageAvailable()) {
             throw new DocumentStorageUnavailableException("Document storage service is temporarily unavailable");
         }
 
-        if (file == null || file.isEmpty()) {
+        MultipartHttpServletRequest multipartRequest =
+                WebUtils.getNativeRequest(rawRequest, MultipartHttpServletRequest.class);
+        if (multipartRequest == null) {
+            throw new MissingServletRequestPartException("file");
+        }
+
+        long totalSize = multipartRequest.getMultiFileMap().values().stream()
+                .flatMap(List::stream)
+                .mapToLong(MultipartFile::getSize)
+                .sum();
+        if (totalSize > VerificationImageValidator.MAX_REQUEST_BYTES) {
+            throw new MaxUploadSizeExceededException(VerificationImageValidator.MAX_REQUEST_BYTES);
+        }
+
+        MultipartFile file = multipartRequest.getFile("file");
+        if (file == null) {
+            throw new MissingServletRequestPartException("file");
+        }
+        if (file.getSize() > VerificationImageValidator.MAX_FILE_BYTES) {
+            throw new MaxUploadSizeExceededException(VerificationImageValidator.MAX_FILE_BYTES);
+        }
+        if (file.isEmpty()) {
             throw new BadRequestException("Verification document file must not be empty");
         }
 
@@ -89,50 +107,69 @@ public class DoctorVerificationDocumentController {
             throw new BadRequestException("Only PNG and JPEG images are supported for verification documents");
         }
 
+        String safeCorrelationId = DoctorVerificationDocumentService.sanitizeCorrelationId(correlationId);
         VerificationImageValidator.ValidatedImage validatedImage;
+        StreamIoCapturingInputStream capturingInput = null;
         try (InputStream input = file.getInputStream()) {
-            validatedImage = imageValidator.validate(contentType, input);
-        } catch (IOException e) {
-            String msg = e.getMessage() != null ? e.getMessage() : "Invalid image";
-            if (msg.contains("5 MiB") || msg.contains("11 MiB")) {
-                throw new MaxUploadSizeExceededException(5242880L);
+            capturingInput = new StreamIoCapturingInputStream(input);
+            validatedImage = imageValidator.validate(contentType, capturingInput);
+        } catch (VerificationImageValidator.InvalidVerificationImageException e) {
+            if (capturingInput != null && capturingInput.failure() != null) {
+                logUploadFailure(validDoctorId, docKind, safeCorrelationId, capturingInput.failure());
+                throw new DocumentUploadException(
+                        "Verification upload could not be processed. Please try again.", capturingInput.failure());
             }
-            throw new BadRequestException("Invalid verification document image: " + msg);
+            if (e.reason() == VerificationImageValidator.InvalidVerificationImageException.Reason.QUEUE_FULL
+                    || e.reason() == VerificationImageValidator.InvalidVerificationImageException.Reason.TIMED_OUT
+                    || e.reason() == VerificationImageValidator.InvalidVerificationImageException.Reason.INTERRUPTED) {
+                logUploadFailure(validDoctorId, docKind, safeCorrelationId, e);
+            }
+            throw translateImageValidationFailure(e);
+        } catch (IOException e) {
+            logUploadFailure(validDoctorId, docKind, safeCorrelationId, e);
+            throw new DocumentUploadException("Verification upload could not be processed. Please try again.", e);
         }
 
-        DoctorVerificationDocument document = documentService.attachDocument(
-                validDoctorId, docKind, validatedImage, authentication, correlationId);
+        DoctorVerificationDocument document;
+        try {
+            document = documentService.attachDocument(
+                    validDoctorId, docKind, validatedImage, authentication, safeCorrelationId);
+        } catch (IllegalStateException e) {
+            logUploadFailure(validDoctorId, docKind, safeCorrelationId, e);
+            throw new DocumentUploadException("Verification upload could not be processed. Please try again.", e);
+        }
 
-        return ResponseEntity.status(org.springframework.http.HttpStatus.CREATED)
+        return SensitiveResponseHeaders.apply(ResponseEntity.status(HttpStatus.CREATED))
                 .body(DoctorVerificationDocumentResponse.from(document));
     }
 
-    @DeleteMapping("/{kind}")
+    @DeleteMapping(VerificationDocumentUploadRoute.KIND_SUBPATH)
     public ResponseEntity<Void> detachDocument(
-            @PathVariable long doctorId,
+            @PathVariable String doctorId,
             @PathVariable String kind,
             @RequestHeader(value = "X-Correlation-ID", required = false) String correlationId,
             Authentication authentication
     ) {
-        long validDoctorId = positiveId(doctorId);
-        VerificationDocumentKind docKind = parseKind(kind);
+        long validDoctorId = VerificationDocumentUploadRoute.parsePositiveDoctorId(doctorId);
+        VerificationDocumentKind docKind = VerificationDocumentUploadRoute.parseKind(kind);
 
         documentService.detachDocument(validDoctorId, docKind, authentication, correlationId);
-        return ResponseEntity.noContent().build();
+        return SensitiveResponseHeaders.apply(ResponseEntity.noContent()).build();
     }
 
-    @GetMapping("/{kind}")
+    @GetMapping(VerificationDocumentUploadRoute.KIND_SUBPATH)
     public ResponseEntity<byte[]> readDocument(
-            @PathVariable long doctorId,
+            @PathVariable String doctorId,
             @PathVariable String kind,
+            @RequestParam(value = "reviewVersion", required = false) String reviewVersion,
             @RequestHeader(value = "X-Correlation-ID", required = false) String correlationId,
             Authentication authentication
     ) {
-        long validDoctorId = positiveId(doctorId);
-        VerificationDocumentKind docKind = parseKind(kind);
+        long validDoctorId = VerificationDocumentUploadRoute.parsePositiveDoctorId(doctorId);
+        VerificationDocumentKind docKind = VerificationDocumentUploadRoute.parseKind(kind);
 
         DocumentStorage.ReadDocument readDoc = documentService.readDocument(
-                validDoctorId, docKind, authentication, correlationId);
+                validDoctorId, docKind, reviewVersion, authentication, correlationId);
 
         String ext = readDoc.contentType().contains("png") ? "png" : "jpg";
         String filename = String.format("doctor-%d-%s.%s", validDoctorId, docKind.pathSegment(), ext);
@@ -150,60 +187,120 @@ public class DoctorVerificationDocumentController {
 
     @GetMapping
     public ResponseEntity<List<DoctorVerificationDocumentResponse>> getActiveDocuments(
-            @PathVariable long doctorId,
+            @PathVariable String doctorId,
             Authentication authentication
     ) {
-        long validDoctorId = positiveId(doctorId);
+        long validDoctorId = VerificationDocumentUploadRoute.parsePositiveDoctorId(doctorId);
         List<DoctorVerificationDocumentResponse> responses = documentService
                 .getActiveDocuments(validDoctorId, authentication).stream()
                 .map(DoctorVerificationDocumentResponse::from)
                 .toList();
-        return ResponseEntity.ok(responses);
+        return SensitiveResponseHeaders.apply(ResponseEntity.ok()).body(responses);
     }
 
-    @GetMapping("/{kind}/history")
+    @GetMapping(VerificationDocumentUploadRoute.KIND_SUBPATH + "/history")
     public ResponseEntity<List<DoctorVerificationDocumentResponse>> getDocumentHistory(
-            @PathVariable long doctorId,
+            @PathVariable String doctorId,
             @PathVariable String kind,
             Authentication authentication
     ) {
-        long validDoctorId = positiveId(doctorId);
-        VerificationDocumentKind docKind = parseKind(kind);
+        long validDoctorId = VerificationDocumentUploadRoute.parsePositiveDoctorId(doctorId);
+        VerificationDocumentKind docKind = VerificationDocumentUploadRoute.parseKind(kind);
 
         List<DoctorVerificationDocumentResponse> responses = documentService
                 .getDocumentHistory(validDoctorId, docKind, authentication).stream()
                 .map(DoctorVerificationDocumentResponse::from)
                 .toList();
-        return ResponseEntity.ok(responses);
+        return SensitiveResponseHeaders.apply(ResponseEntity.ok()).body(responses);
+    }
+
+    @ExceptionHandler(BadRequestException.class)
+    ResponseEntity<Map<String, Object>> badRequest(BadRequestException ex) {
+        return SensitiveResponseHeaders.apply(ResponseEntity.badRequest())
+                .body(Map.of("status", 400, "message", ex.getMessage()));
     }
 
     @ExceptionHandler(MethodArgumentTypeMismatchException.class)
     ResponseEntity<Map<String, Object>> invalidDoctorId() {
-        return ResponseEntity.badRequest().body(Map.of("status", 400, "message", "Doctor ID must be a positive integer"));
+        return SensitiveResponseHeaders.apply(ResponseEntity.badRequest())
+                .body(Map.of("status", 400, "message", "Doctor ID must be a positive integer"));
     }
 
     @ExceptionHandler(MissingServletRequestPartException.class)
-    ResponseEntity<Map<String, Object>> missingPart(MissingServletRequestPartException e) {
-        return ResponseEntity.badRequest().body(Map.of("status", 400, "message", e.getMessage()));
+    ResponseEntity<Map<String, Object>> missingPart() {
+        return SensitiveResponseHeaders.apply(ResponseEntity.badRequest())
+                .body(Map.of("status", 400, "message", "Required verification file part is missing"));
     }
 
-    private static long positiveId(long doctorId) {
-        if (doctorId <= 0) {
-            throw new BadRequestException("Doctor ID must be a positive integer");
-        }
-        return doctorId;
+    private static RuntimeException translateImageValidationFailure(
+            VerificationImageValidator.InvalidVerificationImageException e) {
+        return switch (e.reason()) {
+            case FILE_TOO_LARGE, REQUEST_TOO_LARGE ->
+                    new MaxUploadSizeExceededException(VerificationImageValidator.MAX_FILE_BYTES);
+            case UNSUPPORTED_TYPE ->
+                    new BadRequestException("Only PNG and JPEG images are supported for verification documents");
+            case EXCESSIVE_DIMENSIONS ->
+                    new BadRequestException("Invalid verification document image: Image dimensions exceed the allowed limit");
+            case CORRUPT_IMAGE ->
+                    new BadRequestException("Invalid verification document image: Uploaded file is not a valid JPEG or PNG image");
+            case QUEUE_FULL, TIMED_OUT, INTERRUPTED ->
+                    new BadRequestException("Invalid verification document image: Image validation could not be completed. Please try again.");
+        };
     }
 
-    private static VerificationDocumentKind parseKind(String kind) {
-        if (kind == null || kind.isBlank()) {
-            throw new BadRequestException("Verification document kind is required");
+    private static void logUploadFailure(
+            long doctorId,
+            VerificationDocumentKind kind,
+            String safeCorrelationId,
+            Throwable failure) {
+        log.warn(
+                "Verification document upload processing failed: doctorId={}, kind={}, correlationId={}, exceptionClass={}",
+                doctorId,
+                kind.name(),
+                safeCorrelationId,
+                failure.getClass().getName()
+        );
+    }
+
+    private static final class StreamIoCapturingInputStream extends FilterInputStream {
+        private IOException failure;
+
+        private StreamIoCapturingInputStream(InputStream delegate) {
+            super(delegate);
         }
-        String normalized = kind.trim().toLowerCase(Locale.ROOT).replace('_', '-');
-        for (VerificationDocumentKind docKind : VerificationDocumentKind.values()) {
-            if (docKind.pathSegment().equals(normalized) || docKind.name().equalsIgnoreCase(kind.trim())) {
-                return docKind;
+
+        @Override
+        public int read() throws IOException {
+            try {
+                return super.read();
+            } catch (IOException ex) {
+                failure = ex;
+                throw ex;
             }
         }
-        throw new BadRequestException("Invalid verification document kind: " + kind);
+
+        @Override
+        public int read(byte[] b, int off, int len) throws IOException {
+            try {
+                return super.read(b, off, len);
+            } catch (IOException ex) {
+                failure = ex;
+                throw ex;
+            }
+        }
+
+        @Override
+        public byte[] readNBytes(int len) throws IOException {
+            try {
+                return super.readNBytes(len);
+            } catch (IOException ex) {
+                failure = ex;
+                throw ex;
+            }
+        }
+
+        IOException failure() {
+            return failure;
+        }
     }
 }

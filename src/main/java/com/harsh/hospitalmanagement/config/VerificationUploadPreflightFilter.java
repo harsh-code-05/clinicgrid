@@ -8,8 +8,8 @@ import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.core.Ordered;
 import org.springframework.core.annotation.Order;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
@@ -17,16 +17,11 @@ import org.springframework.web.filter.OncePerRequestFilter;
 
 import java.io.IOException;
 import java.time.LocalDateTime;
-import java.util.regex.Pattern;
+import java.util.Enumeration;
 
 @Component
-@Order(Ordered.HIGHEST_PRECEDENCE + 50)
+@Order(0)
 public class VerificationUploadPreflightFilter extends OncePerRequestFilter {
-
-    private static final Pattern UPLOAD_PATH = Pattern.compile(
-            "^/api/doctors/[1-9][0-9]*/verification/documents/(?:id-proof|qualification)$",
-            Pattern.CASE_INSENSITIVE
-    );
 
     private final DocumentStorage documentStorage;
     private final MultipartStagingManager stagingManager;
@@ -43,10 +38,12 @@ public class VerificationUploadPreflightFilter extends OncePerRequestFilter {
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain filterChain)
             throws ServletException, IOException {
 
-        if ("POST".equalsIgnoreCase(request.getMethod()) && UPLOAD_PATH.matcher(request.getRequestURI()).matches()) {
-            long contentLength = request.getContentLengthLong();
+        MultipartStagingManager.StagingDirectoryPin stagingPin = null;
+        if (VerificationDocumentUploadRoute.matchUpload(request).isPresent()) {
+            long contentLength = resolveContentLength(request);
             if (contentLength > VerificationImageValidator.MAX_REQUEST_BYTES) {
                 response.setStatus(HttpStatus.PAYLOAD_TOO_LARGE.value());
+                SensitiveResponseHeaders.apply(response);
                 response.setContentType(MediaType.APPLICATION_JSON_VALUE);
                 response.setCharacterEncoding("UTF-8");
                 response.getWriter().write(String.format(
@@ -62,7 +59,7 @@ public class VerificationUploadPreflightFilter extends OncePerRequestFilter {
             }
             if (stagingManager != null) {
                 try {
-                    stagingManager.validateStagingDirectory();
+                    stagingPin = stagingManager.validateAndPinStagingDirectory();
                 } catch (Exception e) {
                     sendUnavailable(response, "Document storage service is temporarily unavailable");
                     return;
@@ -70,11 +67,36 @@ public class VerificationUploadPreflightFilter extends OncePerRequestFilter {
             }
         }
 
-        filterChain.doFilter(request, response);
+        try (var activePin = stagingPin) {
+            filterChain.doFilter(request, response);
+        }
+    }
+
+    private static long resolveContentLength(HttpServletRequest request) {
+        long resolved = request.getContentLengthLong();
+        Enumeration<String> headers = request.getHeaders(HttpHeaders.CONTENT_LENGTH);
+        if (headers != null) {
+            while (headers.hasMoreElements()) {
+                String raw = headers.nextElement();
+                if (raw == null || raw.isBlank()) {
+                    continue;
+                }
+                try {
+                    long parsed = Long.parseLong(raw.strip());
+                    if (parsed > resolved) {
+                        resolved = parsed;
+                    }
+                } catch (NumberFormatException ignored) {
+                    // Let servlet container / multipart resolver reject invalid header syntax if applicable
+                }
+            }
+        }
+        return resolved;
     }
 
     private void sendUnavailable(HttpServletResponse response, String message) throws IOException {
         response.setStatus(HttpStatus.SERVICE_UNAVAILABLE.value());
+        SensitiveResponseHeaders.apply(response);
         response.setContentType(MediaType.APPLICATION_JSON_VALUE);
         response.setCharacterEncoding("UTF-8");
         response.getWriter().write(String.format(

@@ -12,6 +12,8 @@ public record DoctorVerificationResponse(
         String registrationNumber,
         String medicalCouncil,
         Integer registrationYear,
+        String latestRejectionReason,
+        String reviewVersion,
         List<HistoryEntry> history) {
 
     public record HistoryEntry(VerificationStatus previousStatus, VerificationStatus newStatus,

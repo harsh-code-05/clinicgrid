@@ -250,6 +250,182 @@ class WindowsDocumentStorageTest {
         assertThat(store.exists(key)).isFalse();
     }
 
+    @Test
+    void listStoredDocumentsPaginatesWithCursorAndIncludesLastModifiedTimestamp() throws IOException {
+        var store = storage(1);
+        assertThat(store.listStoredDocuments(null, 10).documents()).isEmpty();
+
+        var k1 = store.store(42, DocumentKind.ID_PROOF, image);
+        var k2 = store.store(42, DocumentKind.QUALIFICATION, image);
+        var k3 = store.store(43, DocumentKind.ID_PROOF, image);
+
+        var page1 = store.listStoredDocuments(null, 2);
+        assertThat(page1.documents()).hasSize(2);
+        assertThat(page1.nextCursor()).isNotNull();
+
+        var page2 = store.listStoredDocuments(page1.nextCursor(), 2);
+        assertThat(page2.documents()).hasSize(1);
+        assertThat(page2.nextCursor()).isNull();
+
+        var seenKeys = new java.util.HashSet<DocumentKey>();
+        page1.documents().forEach(doc -> {
+            assertThat(doc.lastModifiedAt()).isNotNull();
+            seenKeys.add(doc.key());
+        });
+        page2.documents().forEach(doc -> {
+            assertThat(doc.lastModifiedAt()).isNotNull();
+            seenKeys.add(doc.key());
+        });
+        assertThat(seenKeys).containsExactlyInAnyOrder(k1, k2, k3);
+    }
+
+    @Test
+    void scanFilesAdvancesCursorThroughEmptyDirectoriesWithoutStarvation() throws IOException {
+        Path verificationDir = protectedDirectory(documentRoot.resolve("verification"));
+        for (int doctorId = 1; doctorId <= 40; doctorId++) {
+            Path doctorDir = protectedDirectory(verificationDir.resolve(String.valueOf(doctorId)));
+            protectedDirectory(doctorDir.resolve("id-proof"));
+            protectedDirectory(doctorDir.resolve("qualification"));
+        }
+
+        var store = storage(1);
+        var trailingOrphan = store.store(41, DocumentKind.ID_PROOF, image);
+
+        String cursor = null;
+        var seenCursors = new java.util.HashSet<String>();
+        var discovered = new java.util.ArrayList<PrivateFiles.FileEntry>();
+        int pages = 0;
+        boolean sawEmptyHasMorePage = false;
+        while (true) {
+            pages++;
+            assertThat(pages).isLessThan(100);
+            PrivateFiles.FileScanResult page = documentFiles.scanFiles(Path.of("verification"), cursor, 10, 6);
+            discovered.addAll(page.entries());
+            if (!page.hasMore()) {
+                assertThat(page.nextCursor()).isNull();
+                break;
+            }
+            if (page.entries().isEmpty()) {
+                sawEmptyHasMorePage = true;
+            }
+            assertThat(page.nextCursor()).isNotNull();
+            assertThat(seenCursors.add(page.nextCursor())).isTrue();
+            cursor = page.nextCursor();
+        }
+
+        assertThat(sawEmptyHasMorePage).isTrue();
+        assertThat(discovered).hasSize(1);
+        assertThat(DocumentKey.parse(discovered.get(0).relativePath().toString().replace('\\', '/')))
+                .isEqualTo(trailingOrphan);
+    }
+
+    @Test
+    void scanFilesBoundsWorkAndEnumeratesAllEntriesWithoutDuplicatesOrOmissions() throws IOException {
+        var store = storage(1);
+        var expected = new java.util.HashSet<DocumentKey>();
+        for (int doctorId = 1; doctorId <= 10; doctorId++) {
+            expected.add(store.store(doctorId, DocumentKind.ID_PROOF, image));
+            expected.add(store.store(doctorId, DocumentKind.QUALIFICATION, image));
+        }
+        for (int i = 0; i < 10; i++) {
+            expected.add(store.store(99, DocumentKind.ID_PROOF, image));
+        }
+
+        String cursor = null;
+        var actual = new java.util.HashSet<DocumentKey>();
+        int pages = 0;
+        while (true) {
+            pages++;
+            assertThat(pages).isLessThan(100);
+            PrivateFiles.FileScanResult page = documentFiles.scanFiles(Path.of("verification"), cursor, 3, 5);
+            assertThat(page.entries().size()).isLessThanOrEqualTo(3);
+            for (PrivateFiles.FileEntry entry : page.entries()) {
+                DocumentKey parsed = DocumentKey.parse(entry.relativePath().toString().replace('\\', '/'));
+                assertThat(actual.add(parsed)).isTrue();
+            }
+            if (!page.hasMore()) {
+                assertThat(page.nextCursor()).isNull();
+                break;
+            }
+            assertThat(page.nextCursor()).isNotNull();
+            cursor = page.nextCursor();
+        }
+        assertThat(actual).containsExactlyInAnyOrderElementsOf(expected);
+
+        // Verify NTFS $UpCase comparator agrees with NTFS ordering ('a'/'B' before '_').
+        assertThat(WindowsPrivateFiles.compareNtfsName("10", "2")).isNegative();
+        assertThat(WindowsPrivateFiles.compareNtfsName("a", "B")).isNegative();
+        assertThat(WindowsPrivateFiles.compareNtfsName("z", "_")).isNegative();
+    }
+
+    @Test
+    void scanFilesRemainsCompleteUnderOutOfOrderDirectoryStream() throws IOException {
+        UUID firstUuid = UUID.fromString("00000000-0000-4000-8000-000000000001");
+        UUID secondUuid = UUID.fromString("ffffffff-ffff-4fff-8fff-ffffffffffff");
+        UUID thirdUuid = UUID.fromString("11111111-1111-4111-8111-111111111111");
+        var uuids = new java.util.ArrayDeque<>(java.util.List.of(secondUuid, firstUuid, thirdUuid));
+        var store = new FilesystemDocumentStorage(documentFiles, new WindowsDpapiMasterKeyProvider(keyFiles, 1), uuids::removeFirst);
+        var kLaterUuid = store.store(42, DocumentKind.ID_PROOF, image);
+        var kEarlierUuid = store.store(42, DocumentKind.ID_PROOF, image);
+        var kOtherDoctor = store.store(9, DocumentKind.QUALIFICATION, image);
+
+        WindowsPrivateFiles.DirectoryLister reverseOrderLister = dir -> {
+            var items = new java.util.ArrayList<Path>();
+            try (var stream = Files.newDirectoryStream(dir)) {
+                stream.forEach(items::add);
+            }
+            items.sort((a, b) -> WindowsPrivateFiles.compareNtfsName(
+                    b.getFileName().toString(), a.getFileName().toString()));
+            return new java.nio.file.DirectoryStream<>() {
+                @Override
+                public java.util.Iterator<Path> iterator() {
+                    return items.iterator();
+                }
+
+                @Override
+                public void close() {
+                }
+            };
+        };
+
+        String cursor = null;
+        var seen = new java.util.ArrayList<DocumentKey>();
+        int pages = 0;
+        while (true) {
+            pages++;
+            assertThat(pages).isLessThan(20);
+            PrivateFiles.FileScanResult page = documentFiles.scanFiles(
+                    Path.of("verification"), cursor, 1, 5, reverseOrderLister);
+            assertThat(page.entries().size()).isLessThanOrEqualTo(1);
+            page.entries().forEach(entry -> seen.add(
+                    DocumentKey.parse(entry.relativePath().toString().replace('\\', '/'))));
+            if (!page.hasMore()) {
+                assertThat(page.nextCursor()).isNull();
+                break;
+            }
+            cursor = page.nextCursor();
+        }
+        assertThat(seen).containsExactly(kEarlierUuid, kLaterUuid, kOtherDoctor);
+    }
+
+    @Test
+    void listStoredDocumentsRefusesJunctionDirectories() throws Exception {
+        Path outside = protectedDirectory(temp.resolve("outside-scan"));
+        Path verificationDir = documentRoot.resolve("verification");
+        Files.createDirectory(verificationDir);
+        MultipartStagingManager.setRestrictedWindowsDacl(verificationDir);
+        Path doctorJunction = verificationDir.resolve("42");
+        createJunction(doctorJunction, outside);
+        try {
+            var store = storage(1);
+            assertThatThrownBy(() -> store.listStoredDocuments(null, 10))
+                    .isInstanceOf(IOException.class)
+                    .hasMessageContaining("reparse");
+        } finally {
+            Files.deleteIfExists(doctorJunction);
+        }
+    }
+
     private FilesystemDocumentStorage storage(int activeVersion) throws IOException {
         return new FilesystemDocumentStorage(documentFiles, new WindowsDpapiMasterKeyProvider(keyFiles, activeVersion),
                 UUID::randomUUID);

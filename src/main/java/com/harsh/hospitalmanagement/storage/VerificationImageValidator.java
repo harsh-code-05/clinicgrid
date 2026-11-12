@@ -51,18 +51,22 @@ public final class VerificationImageValidator {
 
     /** Bounds the actual raw body, including any envelope, before a future upload endpoint parses it. */
     public byte[] readBoundedRequest(InputStream body) throws IOException {
-        return readBounded(body, MAX_REQUEST_BYTES, "Verification upload exceeds 11 MiB");
+        return readBounded(body, MAX_REQUEST_BYTES,
+                InvalidVerificationImageException.Reason.REQUEST_TOO_LARGE, "Verification upload exceeds 11 MiB");
     }
 
     public ValidatedImage validate(String contentType, InputStream input) throws IOException {
         Format format = Format.fromMime(contentType);
         if (!ADMISSION.tryAcquire()) {
-            throw new IOException("Verification image validation queue is full");
+            throw new InvalidVerificationImageException(
+                    InvalidVerificationImageException.Reason.QUEUE_FULL,
+                    "Verification image validation queue is full");
         }
         try {
             acquireDecoder();
             try {
-                byte[] bytes = readBounded(input, MAX_FILE_BYTES, "Verification image exceeds 5 MiB");
+                byte[] bytes = readBounded(input, MAX_FILE_BYTES,
+                        InvalidVerificationImageException.Reason.FILE_TOO_LARGE, "Verification image exceeds 5 MiB");
                 byte[] sanitized = switch (format) {
                     case PNG -> stripPngMetadata(bytes);
                     case JPEG -> stripJpegMetadata(bytes);
@@ -76,21 +80,65 @@ public final class VerificationImageValidator {
         }
     }
 
-    private static void acquireDecoder() throws IOException {
+    /**
+     * Verifies container framing, bounds, pixel dimensions, and full image decode structure
+     * without re-encoding, for persisted evidence checks during submission, preview, and approval.
+     */
+    public void validateStructure(String contentType, byte[] bytes) throws IOException {
+        Format format = Format.fromMime(contentType);
+        if (bytes == null || bytes.length == 0) {
+            throw invalidImage();
+        }
+        if (bytes.length > MAX_FILE_BYTES) {
+            throw new InvalidVerificationImageException(
+                    InvalidVerificationImageException.Reason.FILE_TOO_LARGE,
+                    "Verification image exceeds 5 MiB");
+        }
+        if (!ADMISSION.tryAcquire()) {
+            throw new InvalidVerificationImageException(
+                    InvalidVerificationImageException.Reason.QUEUE_FULL,
+                    "Verification image validation queue is full");
+        }
         try {
-            if (!DECODER.tryAcquire(VALIDATION_WAIT_SECONDS, TimeUnit.SECONDS)) {
-                throw new IOException("Timed out waiting for verification image validation");
+            acquireDecoder();
+            try {
+                byte[] sanitized = switch (format) {
+                    case PNG -> stripPngMetadata(bytes);
+                    case JPEG -> stripJpegMetadata(bytes);
+                };
+                BufferedImage decoded = decode(format, sanitized);
+                decoded.flush();
+            } finally {
+                DECODER.release();
             }
-        } catch (InterruptedException exception) {
-            Thread.currentThread().interrupt();
-            throw new IOException("Interrupted while waiting for verification image validation", exception);
+        } finally {
+            ADMISSION.release();
         }
     }
 
-    private static byte[] readBounded(InputStream input, int limit, String error) throws IOException {
+    private static void acquireDecoder() throws IOException {
+        try {
+            if (!DECODER.tryAcquire(VALIDATION_WAIT_SECONDS, TimeUnit.SECONDS)) {
+                throw new InvalidVerificationImageException(
+                        InvalidVerificationImageException.Reason.TIMED_OUT,
+                        "Timed out waiting for verification image validation");
+            }
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            throw new InvalidVerificationImageException(
+                    InvalidVerificationImageException.Reason.INTERRUPTED,
+                    "Interrupted while waiting for verification image validation", exception);
+        }
+    }
+
+    private static byte[] readBounded(
+            InputStream input,
+            int limit,
+            InvalidVerificationImageException.Reason reason,
+            String error) throws IOException {
         byte[] bytes = Objects.requireNonNull(input).readNBytes(limit + 1);
         if (bytes.length > limit) {
-            throw new IOException(error);
+            throw new InvalidVerificationImageException(reason, error);
         }
         return bytes;
     }
@@ -118,7 +166,9 @@ public final class VerificationImageValidator {
 
     private static void requireDimensions(int width, int height) throws IOException {
         if (width <= 0 || height <= 0 || (long) width * height > MAX_PIXELS) {
-            throw new IOException("Verification image dimensions exceed the 12 megapixel limit or are invalid");
+            throw new InvalidVerificationImageException(
+                    InvalidVerificationImageException.Reason.EXCESSIVE_DIMENSIONS,
+                    "Verification image dimensions exceed the 12 megapixel limit or are invalid");
         }
     }
 
@@ -334,8 +384,10 @@ public final class VerificationImageValidator {
         return Byte.toUnsignedInt(bytes[index]);
     }
 
-    private static IOException invalidImage() {
-        return new IOException("Invalid or corrupt JPEG or PNG verification image");
+    private static InvalidVerificationImageException invalidImage() {
+        return new InvalidVerificationImageException(
+                InvalidVerificationImageException.Reason.CORRUPT_IMAGE,
+                "Invalid or corrupt JPEG or PNG verification image");
     }
 
     enum Format {
@@ -360,7 +412,9 @@ public final class VerificationImageValidator {
                     }
                 }
             }
-            throw new IOException("Only JPEG and PNG verification images are supported");
+            throw new InvalidVerificationImageException(
+                    InvalidVerificationImageException.Reason.UNSUPPORTED_TYPE,
+                    "Only JPEG and PNG verification images are supported");
         }
 
         static Format fromCode(byte code) {
@@ -484,8 +538,39 @@ public final class VerificationImageValidator {
 
         private void requireRoom(int length) throws IOException {
             if (getStreamPosition() > MAX_FILE_BYTES - length) {
-                throw new IOException("Re-encoded verification image exceeds 5 MiB");
+                throw new InvalidVerificationImageException(
+                        InvalidVerificationImageException.Reason.FILE_TOO_LARGE,
+                        "Re-encoded verification image exceeds 5 MiB");
             }
+        }
+    }
+
+    public static final class InvalidVerificationImageException extends IOException {
+        public enum Reason {
+            UNSUPPORTED_TYPE,
+            FILE_TOO_LARGE,
+            REQUEST_TOO_LARGE,
+            EXCESSIVE_DIMENSIONS,
+            CORRUPT_IMAGE,
+            QUEUE_FULL,
+            TIMED_OUT,
+            INTERRUPTED
+        }
+
+        private final Reason reason;
+
+        public InvalidVerificationImageException(Reason reason, String message) {
+            super(message);
+            this.reason = Objects.requireNonNull(reason, "Reason must not be null");
+        }
+
+        public InvalidVerificationImageException(Reason reason, String message, Throwable cause) {
+            super(message, cause);
+            this.reason = Objects.requireNonNull(reason, "Reason must not be null");
+        }
+
+        public Reason reason() {
+            return reason;
         }
     }
 }
