@@ -187,12 +187,17 @@ public class DoctorApplicationService {
             throw new BadRequestException("Only pending applications can be rejected");
         }
 
+        String normalizedReason = reason != null ? reason.strip() : "";
+        if (normalizedReason.isEmpty() || normalizedReason.length() > 255) {
+            throw new BadRequestException("Rejection reason is required and must be at most 255 characters");
+        }
+
         User adminUser = userRepository.findById(adminId)
                 .orElseThrow(() -> new ResourceNotFoundException("Admin user not found"));
 
         // User role intentionally NOT changed — stays PATIENT
         application.setStatus(ApplicationStatus.REJECTED);
-        application.setRejectionReason(reason);
+        application.setRejectionReason(normalizedReason);
         application.setReviewedAt(LocalDateTime.now());
         application.setReviewedBy(adminUser);
 

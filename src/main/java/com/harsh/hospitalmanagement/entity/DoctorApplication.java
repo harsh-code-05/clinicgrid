@@ -45,7 +45,7 @@ public class DoctorApplication {
     @Column(nullable = false)
     private ApplicationStatus status;
 
-    @Column
+    @Column(length = 255)
     private String rejectionReason;
 
     @Column

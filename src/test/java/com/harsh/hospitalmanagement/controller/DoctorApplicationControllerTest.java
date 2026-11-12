@@ -315,6 +315,21 @@ class DoctorApplicationControllerTest {
     }
 
     @Test
+    @WithLocalUser(username = "admin@example.com", roles = "ADMIN")
+    void rejectApplication_shouldReturn400_whenReasonExceeds255Characters() throws Exception {
+
+        String json = """
+                { "reason": "%s" }
+                """.formatted("x".repeat(256));
+
+        mockMvc.perform(patch("/api/doctor-applications/1/reject").with(csrf())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errors.reason").exists());
+    }
+
+    @Test
     @WithLocalUser(username = "patient@example.com", roles = "PATIENT")
     void rejectApplication_shouldReturn403_whenCallerIsPatient() throws Exception {
 

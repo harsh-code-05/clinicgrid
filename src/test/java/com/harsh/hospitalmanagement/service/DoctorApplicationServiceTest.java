@@ -342,6 +342,22 @@ class DoctorApplicationServiceTest {
     }
 
     @Test
+    void rejectApplication_shouldThrowBadRequestException_whenReasonTooLong() {
+        DoctorApplication application = new DoctorApplication();
+        application.setId(22L);
+        application.setStatus(ApplicationStatus.PENDING);
+
+        when(doctorApplicationRepository.findByIdForUpdate(22L)).thenReturn(Optional.of(application));
+
+        String over255 = "x".repeat(256);
+        assertThatThrownBy(() -> service.rejectApplication(22L, over255, account("admin@example.com").id()))
+                .isInstanceOf(BadRequestException.class)
+                .hasMessage("Rejection reason is required and must be at most 255 characters");
+
+        verify(doctorApplicationRepository, never()).save(any());
+    }
+
+    @Test
     void rejectApplication_shouldThrowBadRequestException_whenApplicationNotPending() {
 
         DoctorApplication application = new DoctorApplication();
