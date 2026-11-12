@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import api from '../api/axios';
 import DiscoverySearchForm from '../components/DiscoverySearchForm';
 import { PublicFooter, PublicHeader } from '../components/PublicLayout';
+import { discoveryQuery } from '../utils/discoveryLocation';
 import heroImage from '../assets/discovery/hero-consultation.png';
 import heartIcon from '../assets/discovery/specialty-heart.svg';
 import arrowIcon from '../assets/discovery/arrow-right.svg';
@@ -34,10 +35,7 @@ export default function HomePage() {
   }, []);
 
   const openDiscovery = (search) => {
-    const params = new URLSearchParams();
-    if (search.city.trim()) params.set('city', search.city.trim());
-    if (search.specializationId) params.set('specializationId', search.specializationId);
-    if (search.mode) params.set('mode', search.mode);
+    const params = discoveryQuery(search);
     navigate(`/discover${params.size ? `?${params}` : ''}`);
   };
 

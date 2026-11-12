@@ -4,6 +4,7 @@ import test from 'node:test';
 import vm from 'node:vm';
 import { transformWithOxc } from 'vite';
 import { RequestSequencer, executeSequencedRequest } from '../src/utils/requestSequencer.js';
+import { LOCATION_FILTER_DEFAULTS, discoveryQuery, locationDraft, selectedLocationFilters } from '../src/utils/discoveryLocation.js';
 
 function componentSource(path) {
   return readFileSync(new URL(path, import.meta.url), 'utf8')
@@ -136,11 +137,16 @@ async function setup({
     api: defaultApi,
     RequestSequencer,
     executeSequencedRequest,
+    LOCATION_FILTER_DEFAULTS,
+    discoveryQuery,
+    locationDraft,
+    selectedLocationFilters,
     AbortController,
     URLSearchParams,
     PublicHeader: () => ({ type: 'header', props: { className: 'public-header' } }),
     PublicFooter: () => ({ type: 'footer', props: { className: 'public-footer' } }),
     DiscoverySearchForm: (props) => ({ type: 'form', props: { className: 'discovery-search' } }),
+    LocationAutocomplete: (props) => ({ type: 'input', props }),
     SectionHeading: (props) => ({ type: 'div', props: { className: 'section-heading' }, children: [props.title] }),
   });
 
@@ -228,7 +234,7 @@ test('discovery API error displays error alert and retry button', async () => {
 
   // Click retry button
   retryBtn.props.onClick();
-  await flush();
+  await render();
   assert.equal(callCount, 2, 'Clicking retry should invoke API again');
 });
 
@@ -330,6 +336,57 @@ test('URL query parameters are forwarded to backend discovery API', async () => 
   assert.equal(discoveryCall.config.params.specializationId, '1');
   assert.equal(discoveryCall.config.params.city, 'Kanpur');
   assert.equal(discoveryCall.config.params.mode, 'IN_CLINIC');
+});
+
+test('a canonical district reaches doctor discovery and gets a distinct empty state', async () => {
+  const location = {
+    locationId: '479',
+    locationType: 'DISTRICT',
+    locationName: 'Mumbai',
+    locationState: 'Maharashtra',
+  };
+  let query;
+  const { render } = await setup({
+    searchParams: new URLSearchParams({ ...location, city: 'Legacy city' }),
+    apiHandlers: {
+      get: async (url, config) => {
+        if (url === '/v2/discovery/doctors') query = config.params;
+        return { data: [] };
+      },
+    },
+  });
+
+  const tree = await render();
+  assert.deepEqual({ ...query }, location);
+  assert.match(text(tree), /No verified doctors found in this location\./);
+});
+
+test('canonical location heading displays selected location name with specialty', async () => {
+  const params = new URLSearchParams({
+    specializationId: '1',
+    locationId: 'mock-mumbai',
+    locationType: 'CITY',
+    locationName: 'Mumbai',
+    locationState: 'Maharashtra',
+  });
+  const { render } = await setup({ searchParams: params });
+  await render();
+  const tree = await render();
+  const headingNode = nodes(tree).find((n) => n.type === 'h1');
+  assert.equal(text(headingNode), 'Cardiology doctors in Mumbai');
+});
+
+test('the resolved parent city is forwarded with an area search', async () => {
+  const location = {
+    locationId: 'mock-mumbai-central',
+    locationType: 'AREA',
+    locationName: 'Mumbai Central',
+    locationState: 'Maharashtra',
+    locationParentCity: 'Mumbai',
+  };
+  const { apiCalls } = await setup({ searchParams: new URLSearchParams(location) });
+  const call = apiCalls.find(({ url }) => url === '/v2/discovery/doctors');
+  assert.deepEqual({ ...call.config.params }, location);
 });
 
 test('rapid filter changes prevent an older slow response from overwriting newer results', async () => {

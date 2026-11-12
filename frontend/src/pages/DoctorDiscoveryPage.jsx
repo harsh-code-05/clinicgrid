@@ -1,26 +1,28 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState } from 'react';
 import { useSearchParams, useNavigate } from 'react-router-dom';
 import api from '../api/axios';
 import { useAuth } from '../context/useAuth';
 import { RequestSequencer, executeSequencedRequest } from '../utils/requestSequencer';
+import { LOCATION_FILTER_DEFAULTS, discoveryQuery, locationDraft, selectedLocationFilters } from '../utils/discoveryLocation';
 import DiscoverySearchForm from '../components/DiscoverySearchForm';
+import LocationAutocomplete from '../components/LocationAutocomplete';
 import { PublicFooter, PublicHeader } from '../components/PublicLayout';
 import { SectionHeading } from './HomePage';
 import './PublicPages.css';
 
-const FILTER_DEFAULTS = { city: '', specializationId: '', mode: '', date: '', fee: '', experience: '', clinic: '', gender: '' };
+const FILTER_DEFAULTS = { ...LOCATION_FILTER_DEFAULTS, specializationId: '', mode: '', date: '', fee: '', experience: '', clinic: '', gender: '' };
 const MODES = [['', 'Any consultation'], ['IN_CLINIC', 'In-clinic'], ['VIDEO', 'Video consultation']];
 
 function asFilterState(params) {
   return { ...FILTER_DEFAULTS, ...Object.fromEntries([...params.entries()].filter(([key]) => key in FILTER_DEFAULTS)) };
 }
 
-function toQuery(filters) {
-  const next = new URLSearchParams();
-  Object.entries(filters).forEach(([key, value]) => {
-    if (value) next.set(key, value);
-  });
-  return next;
+function doctorQuery(filters) {
+  const { city, locationId, locationType, locationName, locationState, locationParentCity, specializationId, mode } = filters;
+  const location = locationId || locationType || locationName || locationState || locationParentCity
+    ? { locationId, locationType, locationName, locationState, locationParentCity }
+    : { city: city.trim() };
+  return discoveryQuery({ ...location, specializationId, mode }).toString();
 }
 
 export default function DoctorDiscoveryPage() {
@@ -35,20 +37,22 @@ export default function DoctorDiscoveryPage() {
   }
 
   const [specializations, setSpecializations] = useState([]);
-  const [specLoading, setSpecLoading] = useState(true);
   const [specError, setSpecError] = useState('');
   const [drawerOpen, setDrawerOpen] = useState(false);
 
   const [doctors, setDoctors] = useState([]);
   const [doctorsLoading, setDoctorsLoading] = useState(true);
   const [doctorsError, setDoctorsError] = useState('');
-  const [sequencer] = useState(() => (typeof RequestSequencer === 'function' ? new RequestSequencer() : null));
+  const [doctorSearchAttempt, setDoctorSearchAttempt] = useState(0);
+  const [sequencer] = useState(() => new RequestSequencer());
 
   const filters = asFilterState(params);
+  const searchKey = doctorQuery(filters);
+  const hasLocation = Boolean(filters.city.trim() || filters.locationId);
 
   useEffect(() => {
-    sequencer?.mount();
-    return () => sequencer?.dispose();
+    sequencer.mount();
+    return () => sequencer.dispose();
   }, [sequencer]);
 
   useEffect(() => {
@@ -60,77 +64,41 @@ export default function DoctorDiscoveryPage() {
       })
       .catch(() => {
         if (active) setSpecError('Specialties could not be loaded right now. Please try again later.');
-      })
-      .finally(() => {
-        if (active) setSpecLoading(false);
       });
     return () => {
       active = false;
     };
   }, []);
 
-  const fetchDoctors = useCallback(() => {
-    const queryParams = {};
-    if (filters.specializationId) {
-      queryParams.specializationId = filters.specializationId;
-    }
-    if (filters.city && filters.city.trim()) {
-      queryParams.city = filters.city.trim();
-    }
-    if (filters.mode) {
-      queryParams.mode = filters.mode;
-    }
-
-    if (typeof executeSequencedRequest === 'function' && sequencer) {
-      return executeSequencedRequest(
-        sequencer,
-        async (signal) => {
-          const response = await api.get('/v2/discovery/doctors', { params: queryParams, signal });
-          if (!Array.isArray(response.data)) {
-            throw new Error('Unexpected discovery response.');
-          }
-          return response.data;
-        },
-        {
-          onStart: () => {
-            setDoctorsLoading(true);
-            setDoctorsError('');
-          },
-          onSuccess: (data) => {
-            setDoctors(data);
-            setDoctorsLoading(false);
-            setDoctorsError('');
-          },
-          onError: (err) => {
-            if (err?.name === 'CanceledError' || err?.code === 'ERR_CANCELED') {
-              return;
-            }
-            setDoctorsError('Doctor listings could not be loaded right now. Please try again later.');
-            setDoctorsLoading(false);
-          },
-        }
-      );
-    }
-
-    setDoctorsLoading(true);
-    setDoctorsError('');
-    return api.get('/v2/discovery/doctors', { params: queryParams })
-      .then((response) => {
-        if (!Array.isArray(response.data)) throw new Error('Unexpected discovery response.');
-        setDoctors(response.data);
-        setDoctorsLoading(false);
-      })
-      .catch(() => {
-        setDoctorsError('Doctor listings could not be loaded right now. Please try again later.');
-        setDoctorsLoading(false);
-      });
-  }, [filters.specializationId, filters.city, filters.mode, sequencer]);
-
   useEffect(() => {
-    fetchDoctors();
-  }, [fetchDoctors]);
+    const queryParams = Object.fromEntries(new URLSearchParams(searchKey));
+    executeSequencedRequest(
+      sequencer,
+      async (signal) => {
+        const response = await api.get('/v2/discovery/doctors', { params: queryParams, signal });
+        if (!Array.isArray(response.data)) throw new Error('Unexpected discovery response.');
+        return response.data;
+      },
+      {
+        onStart: () => {
+          setDoctorsLoading(true);
+          setDoctorsError('');
+        },
+        onSuccess: (data) => {
+          setDoctors(data);
+          setDoctorsLoading(false);
+          setDoctorsError('');
+        },
+        onError: (err) => {
+          if (err?.code === 'ERR_CANCELED') return;
+          setDoctorsError('Doctor listings could not be loaded right now. Please try again later.');
+          setDoctorsLoading(false);
+        },
+      }
+    );
+  }, [searchKey, doctorSearchAttempt, sequencer]);
 
-  const updateSearch = (search) => setParams(toQuery({ ...filters, ...search }));
+  const updateSearch = (search) => setParams(discoveryQuery({ ...filters, ...search }));
 
   const handleBook = (doctor) => {
     const isPatient = user && user.role?.replace(/^ROLE_/i, '').toUpperCase() === 'PATIENT';
@@ -143,11 +111,10 @@ export default function DoctorDiscoveryPage() {
   };
 
   const selectedSpecialty = specializations.find((item) => String(item.id) === filters.specializationId)?.name;
+  const locationLabel = filters.locationName.trim() || filters.city.trim();
   const heading = selectedSpecialty
-    ? `${selectedSpecialty} doctors${filters.city ? ` in ${filters.city}` : ''}`
+    ? `${selectedSpecialty} doctors${locationLabel ? ` in ${locationLabel}` : ''}`
     : 'Find doctors and clinics';
-  const search = { city: params.get('city') || '', specializationId: params.get('specializationId') || '', mode: params.get('mode') || '' };
-
   const displayedDoctors = doctors.filter((doc) => {
     if (filters.gender && filters.gender !== 'Any') {
       if (!doc.gender || doc.gender.toUpperCase() !== filters.gender.toUpperCase()) {
@@ -190,7 +157,7 @@ export default function DoctorDiscoveryPage() {
             <p className="discovery-hero__summary">
               Verified doctor listings, clinic practices, and appointment booking across India.
             </p>
-            <DiscoverySearchForm key={params.toString()} compact initialSearch={search} specializations={specializations} onSubmit={updateSearch} />
+            <DiscoverySearchForm key={params.toString()} compact initialSearch={filters} specializations={specializations} onSubmit={updateSearch} />
           </div>
         </section>
 
@@ -221,7 +188,7 @@ export default function DoctorDiscoveryPage() {
               <div className="discovery-error" role="alert">
                 <h3>Unable to load doctors</h3>
                 <p>{doctorsError}</p>
-                <button className="hms-button" type="button" onClick={fetchDoctors}>
+                <button className="hms-button" type="button" onClick={() => setDoctorSearchAttempt((attempt) => attempt + 1)}>
                   Try Again
                 </button>
               </div>
@@ -230,12 +197,12 @@ export default function DoctorDiscoveryPage() {
             {!doctorsLoading && !doctorsError && displayedDoctors.length === 0 && (
               <div className="discovery-empty">
                 <span className="discovery-empty__icon" aria-hidden="true">⌕</span>
-                <h3>No doctors found</h3>
-                <p>We couldn't find any verified doctors matching your current filters. Try searching for a different city or specialty.</p>
+                <h3>{hasLocation ? 'No verified doctors found in this location.' : 'No doctors found'}</h3>
+                <p>We couldn't find any verified doctors matching your current filters. Try a different location or specialty.</p>
                 <button
                   className="hms-button hms-button--outline"
                   type="button"
-                  onClick={() => setParams(toQuery(FILTER_DEFAULTS))}
+                  onClick={() => setParams(discoveryQuery(FILTER_DEFAULTS))}
                 >
                   Clear All Filters
                 </button>
@@ -344,16 +311,33 @@ export default function DoctorDiscoveryPage() {
 
 function FilterPanel({ filters, specializations, onApply }) {
   const [draft, setDraft] = useState(filters);
+  const [location, setLocation] = useState(() => locationDraft(filters));
+  const [invalidLocation, setInvalidLocation] = useState(false);
   const set = (key) => (event) => setDraft((current) => ({ ...current, [key]: event.target.value }));
-  const clear = () => setDraft(FILTER_DEFAULTS);
-  const submit = (event) => { event.preventDefault(); onApply(toQuery(draft)); };
+  const updateLocation = (next) => {
+    setLocation(next);
+    setInvalidLocation(false);
+  };
+  const clear = () => {
+    setDraft(FILTER_DEFAULTS);
+    updateLocation(locationDraft(FILTER_DEFAULTS));
+  };
+  const submit = (event) => {
+    event.preventDefault();
+    const locationFilters = selectedLocationFilters(location);
+    if (!locationFilters) {
+      setInvalidLocation(true);
+      return;
+    }
+    onApply(discoveryQuery({ ...draft, ...locationFilters }));
+  };
   return (
     <form className="filter-panel" onSubmit={submit}>
       <div className="filter-panel__title">
         <h2>Filters</h2>
         <button type="button" onClick={clear}>Clear all</button>
       </div>
-      <label>City<input value={draft.city} onChange={set('city')} placeholder="Enter a city" /></label>
+      <LocationAutocomplete value={location} onChange={updateLocation} invalid={invalidLocation} />
       <label>
         Specialty
         <select value={draft.specializationId} onChange={set('specializationId')}>
