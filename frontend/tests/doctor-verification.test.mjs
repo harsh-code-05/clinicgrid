@@ -348,6 +348,7 @@ test('DoctorDashboard exposes Verification tab keyed by doctorProfile.id', async
     AppointmentListState: (props) => ({ type: 'div', props: {}, children: props.children }),
     AppointmentMetricsState: () => ({ type: 'div', props: {}, children: [] }),
     requireAppointmentResult: (r) => r.data,
+    requireAppointmentsList: (r) => r.data,
     mutationErrorMessage: () => 'err',
     RequestSequencer,
     executeSequencedRequest,

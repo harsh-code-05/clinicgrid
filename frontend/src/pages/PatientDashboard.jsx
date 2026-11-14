@@ -1,7 +1,9 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { useNavigate, useSearchParams, useLocation } from 'react-router-dom';
 import api from '../api/axios';
-import { isDate, mutationErrorMessage, requireAppointmentResult, requirePatientProfileResult } from '../api/responseValidation';
+import { isDate, mutationErrorMessage, requireAppointmentResult, requireAppointmentsList, requirePatientProfileResult } from '../api/responseValidation';
+import { RequestSequencer, executeSequencedRequest } from '../utils/requestSequencer';
+import { MAX_CANCELLATION_REASON_LENGTH, buildCancelRequestPayload, validateCancellationReason, formatCancellationNotice, formatCancelledByRole, formatSlotOutcomeLabel, formatCancelledAt, shouldRefreshAfterCancelError } from '../utils/appointmentCancellation';
 import { useAuth } from '../context/useAuth';
 import usePatientSlots from '../hooks/usePatientSlots';
 import PatientAIAssistant from '../components/PatientAIAssistant';
@@ -99,11 +101,39 @@ export default function PatientDashboard() {
 
   // Global notice / alerts
   const [globalNotice, setGlobalNotice] = useState('');
+  const [refreshWarning, setRefreshWarning] = useState('');
 
   // Cancellation modal state
   const [cancellingAppt, setCancellingAppt] = useState(null);
+  const [cancelReason, setCancelReason] = useState('');
   const [isCancelling, setIsCancelling] = useState(false);
   const [cancelError, setCancelError] = useState('');
+  const [cancelRefreshWarning, setCancelRefreshWarning] = useState('');
+
+  const cancelInProgressRef = useRef(false);
+  const mountedRef = useRef(true);
+  const activeUserIdRef = useRef(user?.id);
+  const sequencerRef = useRef(null);
+  const getSequencer = useCallback(() => {
+    if (sequencerRef.current == null) {
+      sequencerRef.current = new RequestSequencer();
+    }
+    return sequencerRef.current;
+  }, []);
+
+  useEffect(() => {
+    activeUserIdRef.current = user?.id;
+  }, [user?.id]);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    const sequencer = getSequencer();
+    sequencer.mount();
+    return () => {
+      mountedRef.current = false;
+      sequencer.dispose();
+    };
+  }, [getSequencer]);
 
   // Booking wizard state
   const [specializations, setSpecializations] = useState([]);
@@ -154,19 +184,36 @@ export default function PatientDashboard() {
 
   // 2. Fetch Appointments
   const fetchAppointments = useCallback(async () => {
-    setAppointmentsLoading(true);
-    setAppointmentsError('');
-    try {
-      const res = await api.get('/appointments');
-      setAppointments(Array.isArray(res.data) ? res.data : []);
-    } catch (err) {
-      setAppointmentsError(
-        err.response?.data?.message || 'Unable to load appointments.',
-      );
-    } finally {
-      setAppointmentsLoading(false);
-    }
-  }, []);
+    const requestUserId = activeUserIdRef.current;
+    return executeSequencedRequest(
+      getSequencer(),
+      async (signal) => {
+        const res = await api.get('/appointments', { signal });
+        return requireAppointmentsList(res);
+      },
+      {
+        onStart: () => {
+          if (!mountedRef.current || activeUserIdRef.current !== requestUserId) return;
+          setAppointmentsLoading(true);
+          setAppointmentsError('');
+        },
+        onSuccess: (data) => {
+          if (!mountedRef.current || activeUserIdRef.current !== requestUserId) return;
+          setAppointments(data);
+          setAppointmentsLoading(false);
+          setRefreshWarning('');
+          setCancelRefreshWarning('');
+        },
+        onError: (err) => {
+          if (!mountedRef.current || activeUserIdRef.current !== requestUserId) return;
+          setAppointmentsError(
+            mutationErrorMessage(err, 'Unable to load appointments.'),
+          );
+          setAppointmentsLoading(false);
+        },
+      },
+    );
+  }, [getSequencer]);
 
   // 3. Fetch Doctors & Specializations
   const fetchDoctorsAndSpecialties = useCallback(async () => {
@@ -214,25 +261,90 @@ export default function PatientDashboard() {
   };
 
   // Handle Cancel Appointment
+  const openCancelModal = (appt) => {
+    setCancelError('');
+    setCancelRefreshWarning('');
+    setCancelReason('');
+    setCancellingAppt(appt);
+  };
+
+  const closeCancelModal = () => {
+    if (isCancelling) return;
+    setCancellingAppt(null);
+    setCancelError('');
+    setCancelRefreshWarning('');
+    setCancelReason('');
+  };
+
   const handleConfirmCancel = async () => {
-    if (!cancellingAppt) return;
+    if (!cancellingAppt || cancelInProgressRef.current) return;
+    const targetAppt = cancellingAppt;
+    const reasonError = validateCancellationReason(cancelReason);
+    if (reasonError) {
+      setCancelError(reasonError);
+      return;
+    }
+    cancelInProgressRef.current = true;
+    const requestUserId = activeUserIdRef.current;
     setIsCancelling(true);
     setCancelError('');
+    setCancelRefreshWarning('');
+    setRefreshWarning('');
     try {
-      const response = await api.patch(`/appointments/${cancellingAppt.id}/cancel`);
-      requireAppointmentResult(response, 'CANCELLED', (data) => data.id === cancellingAppt.id);
-      setGlobalNotice(
-        `Appointment #${cancellingAppt.id} was successfully cancelled.`,
+      const response = await api.patch(
+        `/appointments/${targetAppt.id}/cancel`,
+        buildCancelRequestPayload(cancelReason),
       );
+      const cancelled = requireAppointmentResult(
+        response,
+        'CANCELLED',
+        (data) => data.id === targetAppt.id,
+      );
+      if (!mountedRef.current || activeUserIdRef.current !== requestUserId) {
+        return;
+      }
+      const notice = formatCancellationNotice(cancelled);
       setCancellingAppt(null);
-      await fetchAppointments();
+      setCancelReason('');
+      setCancelRefreshWarning('');
+      const refreshed = await fetchAppointments();
+      if (!mountedRef.current || activeUserIdRef.current !== requestUserId) {
+        return;
+      }
       refreshSlots();
+      setGlobalNotice(notice);
+      setRefreshWarning(
+        refreshed
+          ? ''
+          : 'Appointments could not be refreshed automatically; displayed data may be stale.',
+      );
     } catch (err) {
+      if (!mountedRef.current || activeUserIdRef.current !== requestUserId) {
+        return;
+      }
       setCancelError(
         mutationErrorMessage(err, 'Failed to cancel appointment. Please try again.'),
       );
+      if (shouldRefreshAfterCancelError(err)) {
+        const refreshed = await fetchAppointments();
+        if (!mountedRef.current || activeUserIdRef.current !== requestUserId) {
+          return;
+        }
+        refreshSlots();
+        if (!refreshed) {
+          const warning = 'Unable to refresh the appointment list automatically; displayed data may be stale.';
+          setCancelRefreshWarning(warning);
+          setRefreshWarning(warning);
+        } else {
+          setCancelRefreshWarning('');
+          setRefreshWarning('');
+        }
+      }
     } finally {
-      setIsCancelling(false);
+      cancelInProgressRef.current = false;
+      if (mountedRef.current) {
+        setIsCancelling(false);
+      }
     }
   };
 
@@ -520,6 +632,12 @@ export default function PatientDashboard() {
           </div>
         )}
 
+        {refreshWarning && (
+          <div className="dashboard-alert alert-warning" role="status">
+            <span>{refreshWarning}</span>
+          </div>
+        )}
+
         {/* VIEW 1: MY APPOINTMENTS */}
         {activeTab === 'appointments' && (
           <>
@@ -652,6 +770,38 @@ export default function PatientDashboard() {
                           </div>
                         )}
 
+                        {appt.status === 'CANCELLED' && (
+                          <div className="cancellation-details">
+                            <div className="cancellation-details-title">Cancellation Details</div>
+                            {appt.cancelledAt || appt.cancelledByRole || appt.cancellationReason || appt.cancellationSlotOutcome ? (
+                              <div className="cancellation-details-list">
+                                {(appt.cancelledByRole || appt.cancelledAt) && (
+                                  <div>
+                                    <strong>Cancelled by:</strong>{' '}
+                                    {formatCancelledByRole(appt.cancelledByRole) || 'Recorded'}
+                                    {appt.cancelledAt ? ` on ${formatCancelledAt(appt.cancelledAt)}` : ''}
+                                  </div>
+                                )}
+                                {appt.cancellationSlotOutcome && (
+                                  <div>
+                                    <strong>Slot status:</strong>{' '}
+                                    {formatSlotOutcomeLabel(appt.cancellationSlotOutcome)}
+                                  </div>
+                                )}
+                                {appt.cancellationReason && (
+                                  <div>
+                                    <strong>Cancellation reason:</strong> {appt.cancellationReason}
+                                  </div>
+                                )}
+                              </div>
+                            ) : (
+                              <div className="cancellation-details-legacy">
+                                Cancelled before detailed tracking was enabled.
+                              </div>
+                            )}
+                          </div>
+                        )}
+
                         <div className="card-footer-meta">
                           Appointment #{appt.id} • Booked on{' '}
                           {formatDate(appt.createdAt?.split('T')[0])}
@@ -663,10 +813,7 @@ export default function PatientDashboard() {
                           <button
                             type="button"
                             className="btn-cancel-appt"
-                            onClick={() => {
-                              setCancelError('');
-                              setCancellingAppt(appt);
-                            }}
+                            onClick={() => openCancelModal(appt)}
                           >
                             Cancel Appointment
                           </button>
@@ -1123,7 +1270,7 @@ export default function PatientDashboard() {
       {cancellingAppt && (
         <div
           className="modal-backdrop"
-          onClick={() => !isCancelling && setCancellingAppt(null)}
+          onClick={closeCancelModal}
         >
           <div
             className="modal-dialog"
@@ -1143,12 +1290,42 @@ export default function PatientDashboard() {
               <strong>{formatTime(cancellingAppt.slot?.startTime)}</strong>?
             </p>
 
+            <div className="cancel-reason-field">
+              <label htmlFor="patient-cancel-reason">
+                Cancellation Reason (Optional)
+              </label>
+              <textarea
+                id="patient-cancel-reason"
+                className="modal-textarea"
+                rows="3"
+                maxLength={MAX_CANCELLATION_REASON_LENGTH}
+                placeholder="Share a brief reason for cancelling (up to 500 characters)"
+                value={cancelReason}
+                onChange={(e) => setCancelReason(e.target.value)}
+                disabled={isCancelling}
+              />
+              <div className="char-counter">
+                {cancelReason.length}/{MAX_CANCELLATION_REASON_LENGTH}
+              </div>
+            </div>
+
             {cancelError && (
               <div
                 className="dashboard-alert alert-error"
                 style={{ marginBottom: '16px' }}
+                role="alert"
               >
                 <span>{cancelError}</span>
+              </div>
+            )}
+
+            {cancelRefreshWarning && (
+              <div
+                className="dashboard-alert alert-warning"
+                style={{ marginBottom: '16px' }}
+                role="status"
+              >
+                <span>{cancelRefreshWarning}</span>
               </div>
             )}
 
@@ -1156,7 +1333,7 @@ export default function PatientDashboard() {
               <button
                 type="button"
                 className="btn-secondary"
-                onClick={() => setCancellingAppt(null)}
+                onClick={closeCancelModal}
                 disabled={isCancelling}
               >
                 Keep Appointment

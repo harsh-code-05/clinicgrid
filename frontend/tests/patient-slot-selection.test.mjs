@@ -6,6 +6,7 @@ import { transformWithOxc } from 'vite';
 import { createFormDrafts } from '../src/context/formDrafts.js';
 import * as validation from '../src/api/responseValidation.js';
 import { RequestSequencer, executeSequencedRequest } from '../src/utils/requestSequencer.js';
+import * as cancellationHelpers from '../src/utils/appointmentCancellation.js';
 
 function componentSource(path) {
   return readFileSync(new URL(path, import.meta.url), 'utf8')
@@ -123,6 +124,7 @@ async function setup(draft = { bookingReason: 'Routine visit' }) {
       },
     },
     ...validation,
+    ...cancellationHelpers,
     RequestSequencer,
     executeSequencedRequest,
   });

@@ -25,9 +25,36 @@ export function requireJsonResponse(response, matches) {
   return response.data;
 }
 
+export const CANCELLATION_ROLES = ['PATIENT', 'DOCTOR', 'ADMIN'];
+export const CANCELLATION_SLOT_OUTCOMES = ['RELEASED', 'WITHHELD', 'RETAINED_UNAVAILABLE', 'OVERLAP'];
+
+function isOptionalCancellationMetadataValid(data) {
+  const reasonValid = data.cancellationReason == null
+    || (typeof data.cancellationReason === 'string' && data.cancellationReason.length <= 500);
+  const cancelledAtValid = data.cancelledAt == null
+    || (typeof data.cancelledAt === 'string' && Number.isFinite(Date.parse(data.cancelledAt)));
+  const cancelledByRoleValid = data.cancelledByRole == null
+    || CANCELLATION_ROLES.includes(data.cancelledByRole);
+  const slotOutcomeValid = data.cancellationSlotOutcome == null
+    || CANCELLATION_SLOT_OUTCOMES.includes(data.cancellationSlotOutcome);
+  return reasonValid && cancelledAtValid && cancelledByRoleValid && slotOutcomeValid;
+}
+
 export function requireAppointmentResult(response, status, matches) {
   return requireJsonResponse(response, (data) =>
-    isObject(data) && isApiId(data.id) && data.status === status && matches(data),
+    isObject(data) && isApiId(data.id) && data.status === status
+    && isOptionalCancellationMetadataValid(data)
+    && matches(data),
+  );
+}
+
+export function requireAppointmentsList(response) {
+  return requireJsonResponse(response, (data) =>
+    Array.isArray(data)
+    && data.every((item) =>
+      isObject(item)
+      && isApiId(item.id)
+      && isOptionalCancellationMetadataValid(item)),
   );
 }
 

@@ -322,6 +322,7 @@ test('AdminDashboard renders Doctor Verification tab strictly separated from app
     AppointmentListState: (props) => ({ type: 'div', props: {}, children: props.children }),
     AppointmentMetricsState: () => ({ type: 'div', props: {}, children: [] }),
     requireAppointmentResult: (r) => r.data,
+    requireAppointmentsList: (r) => r.data,
     mutationErrorMessage: () => 'err',
     RequestSequencer,
     executeSequencedRequest,

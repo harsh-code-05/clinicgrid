@@ -6,6 +6,7 @@ import {
   isDate,
   mutationErrorMessage,
   requireAppointmentResult,
+  requireAppointmentsList,
   requireAvailabilityResult,
   requirePatientProfileResult,
   requireSlotGenerationResult,
@@ -112,4 +113,60 @@ test('mutation validators reject HTML and incomplete or mismatched JSON', () => 
   assert.equal(requireAvailabilityResult(json(availability), request), availability);
   assert.deepEqual(requireSlotGenerationResult(json([slot]), availability), [slot]);
   assert.deepEqual(requireSlotGenerationResult(json([]), availability), []);
+});
+
+test('cancellation response validator enforces metadata types and bounds', () => {
+  const cancelled = {
+    id: 9,
+    status: 'CANCELLED',
+    cancellationReason: '  Doctor unavailable ',
+    cancelledAt: '2099-01-01T10:00:00Z',
+    cancelledByRole: 'DOCTOR',
+    cancellationSlotOutcome: 'RELEASED',
+  };
+  const match = (data) => data.id === 9;
+
+  assert.deepEqual(requireAppointmentResult(json(cancelled), 'CANCELLED', match), cancelled);
+  assert.equal(requireAppointmentResult(json({ id: 9, status: 'CANCELLED' }), 'CANCELLED', match).id, 9);
+  assert.throws(() => requireAppointmentResult(html, 'CANCELLED', match), /unexpected response/);
+  assert.throws(() => requireAppointmentResult(json({
+    ...cancelled,
+    cancellationReason: 'x'.repeat(501),
+  }), 'CANCELLED', match), /unexpected response/);
+  assert.throws(() => requireAppointmentResult(json({
+    ...cancelled,
+    cancelledAt: 'not-a-timestamp',
+  }), 'CANCELLED', match), /unexpected response/);
+  assert.throws(() => requireAppointmentResult(json({
+    ...cancelled,
+    cancelledByRole: 'SUPERUSER',
+  }), 'CANCELLED', match), /unexpected response/);
+  assert.throws(() => requireAppointmentResult(json({
+    ...cancelled,
+    cancellationSlotOutcome: 'DELETED',
+  }), 'CANCELLED', match), /unexpected response/);
+
+  assert.deepEqual(requireAppointmentsList(json([cancelled])), [cancelled]);
+  assert.deepEqual(
+    requireAppointmentsList(json([{
+      id: 10,
+      status: 'CANCELLED',
+      cancellationReason: null,
+      cancelledAt: null,
+      cancelledByRole: null,
+      cancellationSlotOutcome: null,
+    }])),
+    [{
+      id: 10,
+      status: 'CANCELLED',
+      cancellationReason: null,
+      cancelledAt: null,
+      cancelledByRole: null,
+      cancellationSlotOutcome: null,
+    }],
+  );
+  assert.throws(() => requireAppointmentsList(html), /unexpected response/);
+  assert.throws(() => requireAppointmentsList(json([{ id: 11, status: 'CANCELLED', cancellationReason: {} }])),
+    /unexpected response/);
+  assert.throws(() => requireAppointmentsList(json([{ status: 'CONFIRMED' }])), /unexpected response/);
 });
