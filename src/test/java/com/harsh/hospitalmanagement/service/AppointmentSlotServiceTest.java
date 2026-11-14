@@ -6,24 +6,30 @@ import com.harsh.hospitalmanagement.entity.DoctorAvailability;
 import com.harsh.hospitalmanagement.entity.User;
 import com.harsh.hospitalmanagement.enums.SlotStatus;
 import com.harsh.hospitalmanagement.exception.BadRequestException;
+import com.harsh.hospitalmanagement.exception.ConflictException;
 import com.harsh.hospitalmanagement.repository.AppointmentRepository;
 import com.harsh.hospitalmanagement.repository.AppointmentSlotRepository;
 import com.harsh.hospitalmanagement.repository.DoctorAvailabilityRepository;
 import com.harsh.hospitalmanagement.repository.DoctorRepository;
 import com.harsh.hospitalmanagement.security.LocalAccount;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
+import java.time.Clock;
 import java.time.Duration;
+import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalTime;
+import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -44,6 +50,8 @@ class AppointmentSlotServiceTest {
     private static final long DOCTOR_ID = 20L;
     private static final LocalDate DATE = LocalDate.of(2030, 1, 15);
     private static final LocalAccount DOCTOR_ACCOUNT = new LocalAccount(30L, "doctor@test.invalid");
+    private static final LocalAccount ADMIN_ACCOUNT = new LocalAccount(1L, "admin@test.invalid");
+    private static final ZoneId IST = ZoneId.of("Asia/Kolkata");
 
     @Mock
     private AppointmentSlotRepository slotRepository;
@@ -127,6 +135,83 @@ class AppointmentSlotServiceTest {
                         .isInstanceOf(BadRequestException.class)
                         .hasMessage("Start time must be before end time"));
         verifyNoInteractions(slotRepository);
+    }
+
+    @Test
+    void getAvailableSlotsFiltersOutStartedAndPastSlotsUsingBusinessTimezone() {
+        // 2030-01-15 10:00 IST == 2030-01-15T04:30:00Z
+        AppointmentSlotService clockedService = new AppointmentSlotService(
+                slotRepository, availabilityRepository, doctorRepository, appointmentRepository,
+                Clock.fixed(Instant.parse("2030-01-15T04:30:00Z"), IST));
+
+        AppointmentSlot startingNow = slot(1L, LocalTime.of(10, 0), SlotStatus.AVAILABLE);
+        AppointmentSlot future = slot(2L, LocalTime.of(10, 30), SlotStatus.AVAILABLE);
+        when(slotRepository.findBookableByDoctorAndDate(DOCTOR_ID, DATE)).thenReturn(List.of(startingNow, future));
+
+        assertThat(clockedService.getAvailableSlots(DOCTOR_ID, DATE))
+                .extracting(AppointmentSlot::getId)
+                .containsExactly(2L);
+    }
+
+    @Test
+    void unblockSlotTransitionsBlockedFutureSlotToRetiredAvailable() {
+        AppointmentSlotService clockedService = new AppointmentSlotService(
+                slotRepository, availabilityRepository, doctorRepository, appointmentRepository,
+                Clock.fixed(Instant.parse("2030-01-15T04:00:00Z"), IST));
+
+        UUID oldOffer = UUID.randomUUID();
+        AppointmentSlot blocked = slot(77L, LocalTime.of(10, 0), SlotStatus.BLOCKED);
+        blocked.setRetired(false);
+        blocked.setOfferVersion(oldOffer);
+
+        when(slotRepository.findDoctorIdById(77L)).thenReturn(Optional.of(DOCTOR_ID));
+        when(doctorRepository.findByIdForUpdate(DOCTOR_ID)).thenReturn(Optional.of(doctor));
+        when(slotRepository.findByIdForUpdate(77L)).thenReturn(Optional.of(blocked));
+        when(slotRepository.save(blocked)).thenReturn(blocked);
+
+        AppointmentSlot result = clockedService.unblockSlot(77L, ADMIN_ACCOUNT);
+
+        assertThat(result.getStatus()).isEqualTo(SlotStatus.AVAILABLE);
+        assertThat(result.isRetired()).isTrue();
+        assertThat(result.getOfferVersion()).isNotNull().isNotEqualTo(oldOffer);
+    }
+
+    @Test
+    void unblockSlotRejectsOverlappingConfirmedAppointmentOrNonBlockedSlot() {
+        AppointmentSlotService clockedService = new AppointmentSlotService(
+                slotRepository, availabilityRepository, doctorRepository, appointmentRepository,
+                Clock.fixed(Instant.parse("2030-01-15T04:00:00Z"), IST));
+
+        AppointmentSlot available = slot(78L, LocalTime.of(10, 0), SlotStatus.AVAILABLE);
+        when(slotRepository.findDoctorIdById(78L)).thenReturn(Optional.of(DOCTOR_ID));
+        when(doctorRepository.findByIdForUpdate(DOCTOR_ID)).thenReturn(Optional.of(doctor));
+        when(slotRepository.findByIdForUpdate(78L)).thenReturn(Optional.of(available));
+
+        assertThatThrownBy(() -> clockedService.unblockSlot(78L, ADMIN_ACCOUNT))
+                .isInstanceOf(ConflictException.class)
+                .satisfies(ex -> assertThat(((ConflictException) ex).getCode()).isEqualTo("SLOT_NOT_BLOCKED"));
+
+        AppointmentSlot blocked = slot(79L, LocalTime.of(10, 0), SlotStatus.BLOCKED);
+        when(slotRepository.findDoctorIdById(79L)).thenReturn(Optional.of(DOCTOR_ID));
+        when(slotRepository.findByIdForUpdate(79L)).thenReturn(Optional.of(blocked));
+        when(appointmentRepository.existsConfirmedAppointmentForSlot(79L)).thenReturn(false);
+        when(appointmentRepository.existsOverlappingConfirmedAppointment(
+                DOCTOR_ID, DATE, LocalTime.of(10, 0), LocalTime.of(10, 30))).thenReturn(true);
+
+        assertThatThrownBy(() -> clockedService.unblockSlot(79L, ADMIN_ACCOUNT))
+                .isInstanceOf(ConflictException.class)
+                .satisfies(ex -> assertThat(((ConflictException) ex).getCode()).isEqualTo("SLOT_CONFLICTING_BOOKING"));
+    }
+
+    private AppointmentSlot slot(long id, LocalTime start, SlotStatus status) {
+        AppointmentSlot slot = new AppointmentSlot();
+        slot.setId(id);
+        slot.setDoctor(doctor);
+        slot.setDate(DATE);
+        slot.setStartTime(start);
+        slot.setEndTime(start.plusMinutes(30));
+        slot.setStatus(status);
+        return slot;
     }
 
     private void givenAvailability(String start, String end) {

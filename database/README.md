@@ -28,3 +28,13 @@ if ($LASTEXITCODE -ne 0) { throw 'AI-01 migration failed; stop and inspect the t
 The script uses a transaction, a five-second DDL lock timeout, bigint identities, UUID request IDs, and microsecond local timestamps consistent with existing tables. The message request/role unique constraint supports retries. Deleting an owned conversation deletes its messages; deleting a patient with conversations remains restricted. Both indexes support bounded history queries. PostgreSQL 14+ supports this syntax, including the project's previously verified PostgreSQL 18.1 server. The AI-01 script has not been executed as part of implementation verification.
 
 Use `spring.jpa.hibernate.ddl-auto=validate` after approved migrations. See [local FAQ knowledge base, API contracts, and deployment checks](../docs/patient-ai-assistant.md). Do not rely on the existing application's `update` setting to install production constraints.
+
+# APPT-CANCEL-01 Appointment Cancellation Workflow
+
+`database/appt-cancel-01-workflow.sql` is a standalone, apply-once PostgreSQL 18.1+ migration for `public.appointments`. Do not modify `database/reconciliation-deployment/*` (those scripts remain pinned to the prior reconciled baseline) and do not run migrations against the live database without an approved deployment window and backup.
+
+1. Run a fail-closed rehearsal on a disposable PostgreSQL database after the existing baseline schema is installed:
+   - `psql -h localhost -p 5433 -U postgres -d <disposable_db> -X -w -v ON_ERROR_STOP=1 -f .\database\appt-cancel-01-workflow.sql`
+   - `psql -h localhost -p 5433 -U postgres -d <disposable_db> -X -w -v ON_ERROR_STOP=1 -f .\database\appt-cancel-01-verify.sql`
+2. The migration fails closed if duplicate `CONFIRMED` bookings exist for the same `slot_id`, if any `CONFIRMED` appointment points to a non-`BOOKED` slot, or if overlapping `CONFIRMED` bookings exist for the same doctor and date. It installs the five cancellation metadata columns (`cancellation_reason`, `cancelled_at` as `timestamp with time zone`, `cancelled_by_user_id` with `ON DELETE SET NULL`, `cancelled_by_role`, `cancellation_slot_outcome`), consistency/role/outcome check constraints permitting legacy null-metadata `CANCELLED` rows, `uq_appointments_confirmed_slot`, and `ix_appointments_doctor_cancelled_at`.
+3. Configure `hms.scheduling.zone-id=Asia/Kolkata` explicitly (or set an approved IANA zone ID) so slot `(date, start_time/end_time)` boundaries convert deterministically to UTC `Instant` timestamps regardless of JVM host timezone. Run the application with `spring.jpa.hibernate.ddl-auto=validate` after applying the migration.

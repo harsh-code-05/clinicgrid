@@ -1,12 +1,15 @@
 package com.harsh.hospitalmanagement.dto;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
+import com.harsh.hospitalmanagement.enums.AppointmentSlotOutcome;
 import com.harsh.hospitalmanagement.enums.AppointmentStatus;
 import com.harsh.hospitalmanagement.enums.ConsultationMode;
+import com.harsh.hospitalmanagement.enums.Role;
 import lombok.Getter;
 import lombok.Setter;
 
 import java.math.BigDecimal;
+import java.time.Instant;
 import java.time.LocalDateTime;
 import java.util.UUID;
 
@@ -18,6 +21,10 @@ public class AppointmentResponse {
     private String reason;
     private LocalDateTime createdAt;
     private AppointmentStatus status;
+    private String cancellationReason;
+    private Instant cancelledAt;
+    private Role cancelledByRole;
+    private AppointmentSlotOutcome cancellationSlotOutcome;
 
     private PatientResponse patient;
     private DoctorResponse doctor;

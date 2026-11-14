@@ -1,39 +1,48 @@
 package com.harsh.hospitalmanagement.service;
 
 import com.harsh.hospitalmanagement.entity.*;
+import com.harsh.hospitalmanagement.enums.AppointmentSlotOutcome;
 import com.harsh.hospitalmanagement.enums.AppointmentStatus;
 import com.harsh.hospitalmanagement.enums.AuditEventType;
 import com.harsh.hospitalmanagement.enums.Role;
 import com.harsh.hospitalmanagement.enums.SlotStatus;
 import com.harsh.hospitalmanagement.exception.BadRequestException;
+import com.harsh.hospitalmanagement.exception.ConflictException;
 import com.harsh.hospitalmanagement.exception.ForbiddenException;
 import com.harsh.hospitalmanagement.exception.ResourceNotFoundException;
 import com.harsh.hospitalmanagement.repository.AppointmentRepository;
 import com.harsh.hospitalmanagement.repository.AppointmentSlotRepository;
 import com.harsh.hospitalmanagement.repository.DoctorRepository;
 import com.harsh.hospitalmanagement.repository.PatientRepository;
+import com.harsh.hospitalmanagement.security.LocalAccount;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
+import java.time.Clock;
+import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalTime;
+import java.time.ZoneId;
 import java.util.List;
 import java.util.Optional;
+import java.util.UUID;
 
 import static com.harsh.hospitalmanagement.security.WithLocalUser.Factory.account;
 import static org.assertj.core.api.Assertions.assertThat;
-import static com.harsh.hospitalmanagement.security.WithLocalUser.Factory.account;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
 @ExtendWith(MockitoExtension.class)
 class AppointmentServiceTest {
+
+    private static final ZoneId IST = ZoneId.of("Asia/Kolkata");
 
     @Mock
     private AppointmentRepository appointmentRepository;
@@ -361,7 +370,6 @@ class AppointmentServiceTest {
     void bookAppointment_shouldAllowRebooking_whenSlotWasPreviouslyCancelledAndIsNowAvailable() {
         Patient patient = createPatient(1L, "patient@test.com");
         Doctor doctor = createDoctor(2L, "doctor@test.com");
-        // Previously cancelled slot returned to AVAILABLE
         AppointmentSlot releasedSlot = createSlot(5L, doctor, SlotStatus.AVAILABLE);
 
         when(patientRepository.findById(1L)).thenReturn(Optional.of(patient));
@@ -429,9 +437,15 @@ class AppointmentServiceTest {
         givenLockedSlot(slot);
         when(appointmentRepository.save(any(Appointment.class))).thenAnswer(inv -> inv.getArgument(0));
 
-        Appointment cancelled = appointmentService.cancelAppointment(20L, account("patient@test.com"), "ROLE_PATIENT");
+        Appointment cancelled = appointmentService.cancelAppointment(
+                20L, account("patient@test.com"), "ROLE_PATIENT", "  Travel conflict  ");
 
         assertThat(cancelled.getStatus()).isEqualTo(AppointmentStatus.CANCELLED);
+        assertThat(cancelled.getCancellationReason()).isEqualTo("Travel conflict");
+        assertThat(cancelled.getCancelledByRole()).isEqualTo(Role.PATIENT);
+        assertThat(cancelled.getCancelledByUserId()).isEqualTo(account("patient@test.com").id());
+        assertThat(cancelled.getCancelledAt()).isNotNull();
+        assertThat(cancelled.getCancellationSlotOutcome()).isEqualTo(AppointmentSlotOutcome.RETAINED_UNAVAILABLE);
         assertThat(slot.getStatus()).isEqualTo(SlotStatus.AVAILABLE);
 
         var order = inOrder(doctorRepository, appointmentRepository, appointmentSlotRepository);
@@ -445,7 +459,7 @@ class AppointmentServiceTest {
                 eq("ROLE_PATIENT"),
                 eq("Appointment"),
                 eq(20L),
-                contains("Cancelled appointment"),
+                argThat(details -> details.contains("Cancelled appointment") && !details.contains("Travel conflict")),
                 isNull()
         );
     }
@@ -464,6 +478,7 @@ class AppointmentServiceTest {
         Appointment cancelled = appointmentService.cancelAppointment(20L, account("doctor@test.com"), "ROLE_DOCTOR");
 
         assertThat(cancelled.getStatus()).isEqualTo(AppointmentStatus.CANCELLED);
+        assertThat(cancelled.getCancelledByRole()).isEqualTo(Role.DOCTOR);
         assertThat(slot.getStatus()).isEqualTo(SlotStatus.AVAILABLE);
 
         verify(auditLogService).logEvent(
@@ -491,6 +506,7 @@ class AppointmentServiceTest {
         Appointment cancelled = appointmentService.cancelAppointment(20L, account("admin@test.com"), "ROLE_ADMIN");
 
         assertThat(cancelled.getStatus()).isEqualTo(AppointmentStatus.CANCELLED);
+        assertThat(cancelled.getCancelledByRole()).isEqualTo(Role.ADMIN);
         assertThat(slot.getStatus()).isEqualTo(SlotStatus.AVAILABLE);
 
         verify(auditLogService).logEvent(
@@ -522,20 +538,226 @@ class AppointmentServiceTest {
     }
 
     @Test
-    void cancelAppointment_shouldNotLogAuditEvent_whenAppointmentAlreadyCancelled() {
+    void cancelAppointment_shouldReturnExistingAppointmentIdempotentlyWithoutTouchingSlotOrAuditing_whenAlreadyCancelled() {
         Patient patient = createPatient(1L, "patient@test.com");
         Doctor doctor = createDoctor(2L, "doctor@test.com");
-        AppointmentSlot slot = createSlot(3L, doctor, SlotStatus.AVAILABLE);
-        Appointment appointment = createAppointment(20L, patient, doctor, slot, AppointmentStatus.CANCELLED);
+        AppointmentSlot slot = createSlot(3L, doctor, SlotStatus.BOOKED);
+        Appointment appointment = createAppointment(20L, patient, doctor, slot, AppointmentStatus.CONFIRMED);
+        Instant originalTimestamp = Instant.parse("2026-11-12T05:00:00Z");
+        appointment.markCancelled("Original reason", originalTimestamp, 77L, Role.DOCTOR, AppointmentSlotOutcome.WITHHELD);
 
         givenLockedAppointment(appointment);
 
-        assertThatThrownBy(() -> appointmentService.cancelAppointment(20L, account("patient@test.com"), "ROLE_PATIENT"))
-                .isInstanceOf(BadRequestException.class)
-                .hasMessage("Only confirmed appointments can be cancelled");
+        Appointment retry = appointmentService.cancelAppointment(
+                20L, account("patient@test.com"), "ROLE_PATIENT", "Different retry reason");
+
+        assertThat(retry).isSameAs(appointment);
+        assertThat(retry.getStatus()).isEqualTo(AppointmentStatus.CANCELLED);
+        assertThat(retry.getCancellationReason()).isEqualTo("Original reason");
+        assertThat(retry.getCancelledAt()).isEqualTo(originalTimestamp);
+        assertThat(retry.getCancelledByUserId()).isEqualTo(77L);
+        assertThat(retry.getCancelledByRole()).isEqualTo(Role.DOCTOR);
+        assertThat(retry.getCancellationSlotOutcome()).isEqualTo(AppointmentSlotOutcome.WITHHELD);
+        assertThat(slot.getStatus()).isEqualTo(SlotStatus.BOOKED);
 
         verify(appointmentRepository, never()).save(any());
-        verify(auditLogService, never()).logEvent(any(), any(), any(), any(), any(), any(), any());
+        verifyNoInteractions(appointmentSlotRepository, auditLogService);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"ROLE_PATIENT", "ROLE_DOCTOR", "ROLE_ADMIN"})
+    void cancelAppointment_shouldRejectAtOrAfterSlotStartForAllRoles(String role) {
+        Patient patient = createPatient(1L, "patient@test.com");
+        Doctor doctor = createDoctor(2L, "doctor@test.com");
+        AppointmentSlot slot = new AppointmentSlot();
+        slot.setId(3L);
+        slot.setDoctor(doctor);
+        slot.setDate(LocalDate.of(2026, 11, 15));
+        slot.setStartTime(LocalTime.of(10, 0));
+        slot.setEndTime(LocalTime.of(10, 30));
+        slot.setStatus(SlotStatus.BOOKED);
+        Appointment appointment = createAppointment(20L, patient, doctor, slot, AppointmentStatus.CONFIRMED);
+
+        // 2026-11-15 10:00 IST == 2026-11-15T04:30:00Z
+        AppointmentService fixedClockService = new AppointmentService(
+                appointmentRepository, appointmentSlotRepository, patientRepository, doctorRepository, auditLogService,
+                Clock.fixed(Instant.parse("2026-11-15T04:30:00Z"), IST));
+
+        givenLockedAppointment(appointment);
+        givenLockedSlot(slot);
+
+        LocalAccount actor = switch (role) {
+            case "ROLE_ADMIN" -> account("admin@test.com");
+            case "ROLE_DOCTOR" -> account("doctor@test.com");
+            default -> account("patient@test.com");
+        };
+
+        assertThatThrownBy(() -> fixedClockService.cancelAppointment(20L, actor, role, "Running late"))
+                .isInstanceOf(ConflictException.class)
+                .satisfies(ex -> assertThat(((ConflictException) ex).getCode())
+                        .isEqualTo("APPOINTMENT_CANCELLATION_WINDOW_CLOSED"));
+
+        assertThat(appointment.getStatus()).isEqualTo(AppointmentStatus.CONFIRMED);
+        assertThat(slot.getStatus()).isEqualTo(SlotStatus.BOOKED);
+        verify(appointmentRepository, never()).save(any());
+        verifyNoInteractions(auditLogService);
+    }
+
+    @Test
+    void cancelAppointment_shouldReleaseActiveUnretiredOfferBeforeCutoffUsingBusinessTimezone() {
+        Patient patient = createPatient(1L, "patient@test.com");
+        Doctor doctor = createDoctor(2L, "doctor@test.com");
+        DoctorAvailability availability = new DoctorAvailability();
+        availability.setId(9L);
+        availability.setDoctor(doctor);
+        availability.setDate(LocalDate.of(2026, 11, 15));
+        availability.setStartTime(LocalTime.of(9, 0));
+        availability.setEndTime(LocalTime.of(12, 0));
+        availability.setRevision(3L);
+
+        UUID originalOfferVersion = UUID.randomUUID();
+        AppointmentSlot slot = new AppointmentSlot();
+        slot.setId(3L);
+        slot.setDoctor(doctor);
+        slot.setDate(LocalDate.of(2026, 11, 15));
+        slot.setStartTime(LocalTime.of(10, 0));
+        slot.setEndTime(LocalTime.of(10, 30));
+        slot.setStatus(SlotStatus.BOOKED);
+        slot.setAvailability(availability);
+        slot.setAvailabilityRevision(3L);
+        slot.setRetired(false);
+        slot.setOfferVersion(originalOfferVersion);
+
+        Appointment appointment = createAppointment(20L, patient, doctor, slot, AppointmentStatus.CONFIRMED);
+
+        // One second before 10:00 IST (04:29:59Z) must succeed.
+        Clock beforeStart = Clock.fixed(Instant.parse("2026-11-15T04:29:59Z"), IST);
+        AppointmentService fixedClockService = new AppointmentService(
+                appointmentRepository, appointmentSlotRepository, patientRepository, doctorRepository,
+                auditLogService, beforeStart);
+
+        givenLockedAppointment(appointment);
+        givenLockedSlot(slot);
+        when(appointmentSlotRepository.hasValidActiveOfferProvenance(3L)).thenReturn(true);
+        when(appointmentRepository.save(any(Appointment.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        Appointment cancelled = fixedClockService.cancelAppointment(20L, account("patient@test.com"), "ROLE_PATIENT", "   \n  ");
+
+        assertThat(cancelled.getCancellationReason()).isNull();
+        assertThat(cancelled.getCancelledAt()).isEqualTo(Instant.parse("2026-11-15T04:29:59Z"));
+        assertThat(cancelled.getCancellationSlotOutcome()).isEqualTo(AppointmentSlotOutcome.RELEASED);
+        assertThat(slot.getStatus()).isEqualTo(SlotStatus.AVAILABLE);
+        assertThat(slot.isRetired()).isFalse();
+        assertThat(slot.getOfferVersion()).isNotNull().isNotEqualTo(originalOfferVersion);
+    }
+
+    @Test
+    void cancelAppointment_shouldBlockSlotWhenOverlappingConfirmedAppointmentExists() {
+        Patient patient = createPatient(1L, "patient@test.com");
+        Doctor doctor = createDoctor(2L, "doctor@test.com");
+        AppointmentSlot slot = createSlot(3L, doctor, SlotStatus.BOOKED);
+        slot.setRetired(false);
+        Appointment appointment = createAppointment(20L, patient, doctor, slot, AppointmentStatus.CONFIRMED);
+
+        givenLockedAppointment(appointment);
+        givenLockedSlot(slot);
+        when(appointmentRepository.existsOverlappingConfirmedAppointmentExcludingId(
+                eq(2L), eq(slot.getDate()), eq(slot.getStartTime()), eq(slot.getEndTime()), eq(20L)))
+                .thenReturn(true);
+        when(appointmentRepository.save(any(Appointment.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        Appointment cancelled = appointmentService.cancelAppointment(20L, account("admin@test.com"), "ROLE_ADMIN");
+
+        assertThat(cancelled.getCancellationSlotOutcome()).isEqualTo(AppointmentSlotOutcome.OVERLAP);
+        assertThat(slot.getStatus()).isEqualTo(SlotStatus.BLOCKED);
+    }
+
+    @Test
+    void cancelAppointment_shouldWithholdSlotWhenAnotherConfirmedAppointmentOccupiesSameSlot() {
+        Patient patient = createPatient(1L, "patient@test.com");
+        Doctor doctor = createDoctor(2L, "doctor@test.com");
+        AppointmentSlot slot = createSlot(3L, doctor, SlotStatus.BOOKED);
+        slot.setRetired(false);
+        Appointment appointment = createAppointment(20L, patient, doctor, slot, AppointmentStatus.CONFIRMED);
+
+        givenLockedAppointment(appointment);
+        givenLockedSlot(slot);
+        when(appointmentRepository.existsOtherConfirmedAppointmentForSlot(3L, 20L)).thenReturn(true);
+        when(appointmentRepository.save(any(Appointment.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        Appointment cancelled = appointmentService.cancelAppointment(20L, account("admin@test.com"), "ROLE_ADMIN");
+
+        assertThat(cancelled.getCancellationSlotOutcome()).isEqualTo(AppointmentSlotOutcome.WITHHELD);
+        assertThat(slot.getStatus()).isEqualTo(SlotStatus.BOOKED);
+    }
+
+    @Test
+    void cancelAppointment_shouldRetireAndWithholdSlotWhenActiveProvenanceBecameInvalid() {
+        Patient patient = createPatient(1L, "patient@test.com");
+        Doctor doctor = createDoctor(2L, "doctor@test.com");
+        DoctorAvailability availability = new DoctorAvailability();
+        availability.setId(9L);
+        availability.setDoctor(doctor);
+        availability.setDate(LocalDate.now().plusDays(1));
+        availability.setStartTime(LocalTime.of(9, 0));
+        availability.setEndTime(LocalTime.of(12, 0));
+        availability.setRevision(4L);
+
+        AppointmentSlot slot = createSlot(3L, doctor, SlotStatus.BOOKED);
+        slot.setAvailability(availability);
+        slot.setAvailabilityRevision(3L);
+        slot.setRetired(false);
+        Appointment appointment = createAppointment(20L, patient, doctor, slot, AppointmentStatus.CONFIRMED);
+
+        givenLockedAppointment(appointment);
+        givenLockedSlot(slot);
+        when(appointmentRepository.save(any(Appointment.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        Appointment cancelled = appointmentService.cancelAppointment(20L, account("patient@test.com"), "ROLE_PATIENT");
+
+        assertThat(cancelled.getCancellationSlotOutcome()).isEqualTo(AppointmentSlotOutcome.WITHHELD);
+        assertThat(slot.isRetired()).isTrue();
+        assertThat(slot.getStatus()).isEqualTo(SlotStatus.AVAILABLE);
+    }
+
+    @Test
+    void cancelAppointment_shouldRejectReasonOver500Characters() {
+        Patient patient = createPatient(1L, "patient@test.com");
+        Doctor doctor = createDoctor(2L, "doctor@test.com");
+        AppointmentSlot slot = createSlot(3L, doctor, SlotStatus.BOOKED);
+        Appointment appointment = createAppointment(20L, patient, doctor, slot, AppointmentStatus.CONFIRMED);
+
+        givenLockedAppointment(appointment);
+        String overLimit = "x".repeat(501);
+
+        assertThatThrownBy(() -> appointmentService.cancelAppointment(
+                20L, account("patient@test.com"), "ROLE_PATIENT", overLimit))
+                .isInstanceOf(BadRequestException.class)
+                .hasMessage("Cancellation reason cannot exceed 500 characters");
+
+        verify(appointmentRepository, never()).save(any());
+        verifyNoInteractions(appointmentSlotRepository, auditLogService);
+    }
+
+    @Test
+    void cancelAppointment_shouldRejectReasonContainingNulCharacter() {
+        Patient patient = createPatient(1L, "patient@test.com");
+        Doctor doctor = createDoctor(2L, "doctor@test.com");
+        AppointmentSlot slot = createSlot(3L, doctor, SlotStatus.BOOKED);
+        Appointment appointment = createAppointment(20L, patient, doctor, slot, AppointmentStatus.CONFIRMED);
+
+        givenLockedAppointment(appointment);
+
+        assertThatThrownBy(() -> appointmentService.cancelAppointment(
+                20L, account("patient@test.com"), "ROLE_PATIENT", "Reschedule\u0000visit"))
+                .isInstanceOf(BadRequestException.class)
+                .hasMessage("Cancellation reason cannot contain NUL characters");
+
+        assertThat(appointment.getStatus()).isEqualTo(AppointmentStatus.CONFIRMED);
+        assertThat(appointment.getCancellationReason()).isNull();
+        assertThat(slot.getStatus()).isEqualTo(SlotStatus.BOOKED);
+        verify(appointmentRepository, never()).save(any());
+        verifyNoInteractions(appointmentSlotRepository, auditLogService);
     }
 
     @Test
@@ -545,6 +767,40 @@ class AppointmentServiceTest {
         assertThatThrownBy(() -> appointmentService.cancelAppointment(999L, account("patient@test.com"), "ROLE_PATIENT"))
                 .isInstanceOf(ResourceNotFoundException.class)
                 .hasMessage("Appointment not found");
+    }
+
+    @Test
+    void cancelAppointment_shouldNormalizeUnicodeWhitespaceOnlyReasonToNull() {
+        Patient patient = createPatient(1L, "patient@test.com");
+        Doctor doctor = createDoctor(2L, "doctor@test.com");
+        AppointmentSlot slot = createSlot(3L, doctor, SlotStatus.BOOKED);
+        Appointment appointment = createAppointment(20L, patient, doctor, slot, AppointmentStatus.CONFIRMED);
+
+        givenLockedAppointment(appointment);
+        givenLockedSlot(slot);
+        when(appointmentRepository.save(any(Appointment.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        Appointment cancelled = appointmentService.cancelAppointment(
+                20L, account("patient@test.com"), "ROLE_PATIENT", "\u2003\u00A0\u202F\uFEFF\u0085");
+
+        assertThat(cancelled.getCancellationReason()).isNull();
+    }
+
+    @Test
+    void cancelAppointment_shouldStripLeadingAndTrailingUnicodeWhitespaceFromReason() {
+        Patient patient = createPatient(1L, "patient@test.com");
+        Doctor doctor = createDoctor(2L, "doctor@test.com");
+        AppointmentSlot slot = createSlot(3L, doctor, SlotStatus.BOOKED);
+        Appointment appointment = createAppointment(20L, patient, doctor, slot, AppointmentStatus.CONFIRMED);
+
+        givenLockedAppointment(appointment);
+        givenLockedSlot(slot);
+        when(appointmentRepository.save(any(Appointment.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        Appointment cancelled = appointmentService.cancelAppointment(
+                20L, account("patient@test.com"), "ROLE_PATIENT", "\u2003Reschedule\u2003");
+
+        assertThat(cancelled.getCancellationReason()).isEqualTo("Reschedule");
     }
 
     // -------------------------------------------------------------------------
@@ -741,7 +997,7 @@ class AppointmentServiceTest {
     }
 
     @ParameterizedTest
-    @EnumSource(value = AppointmentStatus.class, names = "CONFIRMED", mode = EnumSource.Mode.EXCLUDE)
+    @EnumSource(value = AppointmentStatus.class, names = {"COMPLETED", "NO_SHOW"})
     void cancelAppointment_shouldRejectLockedTerminalStatus(AppointmentStatus status) {
         Patient patient = createPatient(1L, "patient@test.com");
         Doctor doctor = createDoctor(2L, "doctor@test.com");
@@ -750,8 +1006,8 @@ class AppointmentServiceTest {
         givenLockedAppointment(appointment);
 
         assertThatThrownBy(() -> appointmentService.cancelAppointment(20L, account("admin@test.com"), "ROLE_ADMIN"))
-                .isInstanceOf(BadRequestException.class)
-                .hasMessage("Only confirmed appointments can be cancelled");
+                .isInstanceOf(ConflictException.class)
+                .satisfies(ex -> assertThat(((ConflictException) ex).getCode()).isEqualTo("APPOINTMENT_NOT_CANCELLABLE"));
 
         verify(appointmentRepository, never()).findById(anyLong());
         verify(appointmentRepository, never()).save(any());
@@ -813,5 +1069,4 @@ class AppointmentServiceTest {
         verify(appointmentRepository, never()).save(any());
         verifyNoInteractions(auditLogService);
     }
-
 }

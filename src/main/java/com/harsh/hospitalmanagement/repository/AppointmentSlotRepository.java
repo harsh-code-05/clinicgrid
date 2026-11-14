@@ -25,6 +25,15 @@ public interface AppointmentSlotRepository
             AND s.startTime < s.endTime
             """;
 
+    String NO_CONFIRMED_OVERLAP = """
+            AND NOT EXISTS (
+                SELECT ap.id FROM Appointment ap JOIN ap.slot cs
+                WHERE cs.doctor.id = s.doctor.id AND cs.date = s.date
+                AND ap.status = com.harsh.hospitalmanagement.enums.AppointmentStatus.CONFIRMED
+                AND cs.startTime < s.endTime AND cs.endTime > s.startTime
+            )
+            """;
+
     String DISCOVERY_JOINS = """
              FROM AppointmentSlot s JOIN s.availability a JOIN s.doctor d JOIN d.user u
              LEFT JOIN s.location l LEFT JOIN a.location al
@@ -46,19 +55,25 @@ public interface AppointmentSlotRepository
             """;
 
     @Query("SELECT s FROM AppointmentSlot s JOIN s.availability a WHERE s.doctor.id = :doctorId "
-            + "AND s.offerVersion IS NULL AND " + BOOKABLE)
+            + "AND s.offerVersion IS NULL AND " + BOOKABLE + NO_CONFIRMED_OVERLAP)
     List<AppointmentSlot> findBookableByDoctor(@Param("doctorId") Long doctorId);
 
     @Query("SELECT s FROM AppointmentSlot s JOIN s.availability a WHERE s.doctor.id = :doctorId "
-            + "AND s.date = :date AND s.offerVersion IS NULL AND " + BOOKABLE)
+            + "AND s.date = :date AND s.offerVersion IS NULL AND " + BOOKABLE + NO_CONFIRMED_OVERLAP)
     List<AppointmentSlot> findBookableByDoctorAndDate(@Param("doctorId") Long doctorId, @Param("date") LocalDate date);
 
     @Query("SELECT s" + DISCOVERY_JOINS + "s.doctor.id = :doctorId AND s.date = :date AND "
-            + BOOKABLE + DISCOVERY_TERMS + " ORDER BY s.startTime, s.id")
+            + BOOKABLE + DISCOVERY_TERMS + NO_CONFIRMED_OVERLAP + " ORDER BY s.startTime, s.id")
     List<AppointmentSlot> findDiscoverableOffers(@Param("doctorId") Long doctorId, @Param("date") LocalDate date);
 
     @Query("SELECT COUNT(s) > 0" + DISCOVERY_JOINS + "s.id = :id AND " + BOOKABLE + DISCOVERY_TERMS)
     boolean isDiscoverableOffer(@Param("id") Long id);
+
+    @Query("SELECT COUNT(s) > 0" + DISCOVERY_JOINS + "s.id = :id AND s.retired = false "
+            + "AND s.availabilityRevision = a.revision AND s.doctor.id = a.doctor.id AND s.date = a.date "
+            + "AND s.startTime >= a.startTime AND s.endTime <= a.endTime AND s.startTime < s.endTime "
+            + DISCOVERY_TERMS)
+    boolean hasValidActiveOfferProvenance(@Param("id") Long id);
 
     @Query("SELECT COUNT(s) > 0 FROM AppointmentSlot s JOIN s.availability a WHERE s.id = :id AND " + BOOKABLE)
     boolean isBookable(@Param("id") Long id);

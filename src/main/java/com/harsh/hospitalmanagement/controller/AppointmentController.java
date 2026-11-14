@@ -1,16 +1,19 @@
 package com.harsh.hospitalmanagement.controller;
 
-import com.harsh.hospitalmanagement.security.LocalAccount;
+import com.harsh.hospitalmanagement.config.SensitiveResponseHeaders;
 import com.harsh.hospitalmanagement.dto.*;
 import com.harsh.hospitalmanagement.entity.*;
+import com.harsh.hospitalmanagement.security.LocalAccount;
 import com.harsh.hospitalmanagement.service.AppointmentService;
 import jakarta.validation.Valid;
 import org.springframework.http.ResponseEntity;
-import org.springframework.web.bind.annotation.*;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.GrantedAuthority;
+import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 @RestController
 @RequestMapping("/api/appointments")
@@ -36,8 +39,10 @@ public class AppointmentController {
                 LocalAccount.require(authentication)
         );
 
-        return ResponseEntity.ok(toResponse(appointment));
+        return SensitiveResponseHeaders.apply(ResponseEntity.ok())
+                .body(toResponse(appointment));
     }
+
     @GetMapping
     public ResponseEntity<List<AppointmentResponse>> getAppointments(
             Authentication authentication) {
@@ -54,7 +59,8 @@ public class AppointmentController {
                 .map(this::toResponse)
                 .toList();
 
-        return ResponseEntity.ok(responses);
+        return SensitiveResponseHeaders.apply(ResponseEntity.ok())
+                .body(responses);
     }
 
     @GetMapping("/{id}")
@@ -71,18 +77,24 @@ public class AppointmentController {
                         role
                 );
 
-        return ResponseEntity.ok(toResponse(appointment));
+        return SensitiveResponseHeaders.apply(ResponseEntity.ok())
+                .body(toResponse(appointment));
     }
 
     private String getRole(Authentication authentication) {
-        return authentication.getAuthorities().stream()
+        Set<String> authorities = authentication.getAuthorities().stream()
                 .map(GrantedAuthority::getAuthority)
-                .filter(authority ->
-                        authority.equals("ROLE_ADMIN")
-                                || authority.equals("ROLE_PATIENT")
-                                || authority.equals("ROLE_DOCTOR"))
-                .findFirst()
-                .orElse("");
+                .collect(Collectors.toSet());
+        if (authorities.contains("ROLE_ADMIN")) {
+            return "ROLE_ADMIN";
+        }
+        if (authorities.contains("ROLE_DOCTOR")) {
+            return "ROLE_DOCTOR";
+        }
+        if (authorities.contains("ROLE_PATIENT")) {
+            return "ROLE_PATIENT";
+        }
+        return "";
     }
 
     private AppointmentResponse toResponse(Appointment appointment) {
@@ -151,6 +163,10 @@ public class AppointmentController {
         response.setReason(appointment.getReason());
         response.setCreatedAt(appointment.getCreatedAt());
         response.setStatus(appointment.getStatus());
+        response.setCancellationReason(appointment.getCancellationReason());
+        response.setCancelledAt(appointment.getCancelledAt());
+        response.setCancelledByRole(appointment.getCancelledByRole());
+        response.setCancellationSlotOutcome(appointment.getCancellationSlotOutcome());
         response.setPatient(patientResponse);
         response.setDoctor(doctorResponse);
         response.setSlot(slotResponse);
@@ -163,21 +179,24 @@ public class AppointmentController {
 
         return response;
     }
+
     @PatchMapping("/{id}/cancel")
     public ResponseEntity<AppointmentResponse> cancelAppointment(
             @PathVariable Long id,
+            @Valid @RequestBody(required = false) CancelAppointmentRequest request,
             Authentication authentication) {
 
         String role = getRole(authentication);
+        LocalAccount actor = LocalAccount.require(authentication);
 
-        Appointment appointment = appointmentService.cancelAppointment(
-                id,
-                LocalAccount.require(authentication),
-                role
-        );
+        Appointment appointment = request == null
+                ? appointmentService.cancelAppointment(id, actor, role)
+                : appointmentService.cancelAppointment(id, actor, role, request.getReason());
 
-        return ResponseEntity.ok(toResponse(appointment));
+        return SensitiveResponseHeaders.apply(ResponseEntity.ok())
+                .body(toResponse(appointment));
     }
+
     @PatchMapping("/{id}/complete")
     public ResponseEntity<AppointmentResponse> completeAppointment(
             @PathVariable Long id,
@@ -191,6 +210,7 @@ public class AppointmentController {
                 role
         );
 
-        return ResponseEntity.ok(toResponse(appointment));
+        return SensitiveResponseHeaders.apply(ResponseEntity.ok())
+                .body(toResponse(appointment));
     }
 }

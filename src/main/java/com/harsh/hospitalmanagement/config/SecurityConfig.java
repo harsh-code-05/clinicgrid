@@ -336,6 +336,11 @@ public class SecurityConfig {
                                 "/api/appointment-slots/**"
                         ).hasAnyRole("DOCTOR", "ADMIN")
 
+                        .requestMatchers(
+                                HttpMethod.PATCH,
+                                "/api/appointment-slots/*/unblock"
+                        ).hasRole("ADMIN")
+
                         .requestMatchers(HttpMethod.PATCH, "/api/appointments/*/cancel")
                         .hasAnyRole("PATIENT", "DOCTOR", "ADMIN")
 

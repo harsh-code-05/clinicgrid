@@ -1,22 +1,27 @@
 package com.harsh.hospitalmanagement.controller;
 
-import com.harsh.hospitalmanagement.security.WithMvcSecurity;
 import com.harsh.hospitalmanagement.entity.*;
+import com.harsh.hospitalmanagement.enums.AppointmentSlotOutcome;
 import com.harsh.hospitalmanagement.enums.AppointmentStatus;
 import com.harsh.hospitalmanagement.enums.Role;
 import com.harsh.hospitalmanagement.enums.SlotStatus;
 import com.harsh.hospitalmanagement.exception.BadRequestException;
+import com.harsh.hospitalmanagement.exception.ConflictException;
 import com.harsh.hospitalmanagement.exception.ForbiddenException;
 import com.harsh.hospitalmanagement.exception.GlobalExceptionHandler;
 import com.harsh.hospitalmanagement.exception.ResourceNotFoundException;
-import com.harsh.hospitalmanagement.service.AppointmentService;
 import com.harsh.hospitalmanagement.security.LocalAccount;
+import com.harsh.hospitalmanagement.security.WithLocalUser;
+import com.harsh.hospitalmanagement.security.WithMvcSecurity;
+import com.harsh.hospitalmanagement.service.AppointmentService;
+import org.hibernate.exception.ConstraintViolationException;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
+import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.mock.web.MockHttpSession;
-import com.harsh.hospitalmanagement.security.WithLocalUser;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.context.SecurityContextImpl;
 import org.springframework.security.web.context.HttpSessionSecurityContextRepository;
@@ -24,23 +29,27 @@ import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.request.RequestPostProcessor;
 
+import java.sql.SQLException;
+import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.util.List;
 
 import static com.harsh.hospitalmanagement.security.WithLocalUser.Factory.account;
-import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf;
+import static org.hamcrest.Matchers.not;
+import static org.hamcrest.Matchers.containsString;
 import static org.mockito.ArgumentMatchers.*;
-import static org.mockito.Mockito.when;
 import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.when;
+import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 @WebMvcTest(controllers = {AppointmentController.class, GlobalExceptionHandler.class})
 @WithMvcSecurity
@@ -133,6 +142,9 @@ class AppointmentControllerTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(json))
                 .andExpect(status().isOk())
+                .andExpect(header().string(HttpHeaders.CACHE_CONTROL, "no-store"))
+                .andExpect(header().string(HttpHeaders.PRAGMA, "no-cache"))
+                .andExpect(header().string("X-Content-Type-Options", "nosniff"))
                 .andExpect(jsonPath("$.id").value(100L))
                 .andExpect(jsonPath("$.status").value("CONFIRMED"))
                 .andExpect(jsonPath("$.reason").value("Chest tightness"))
@@ -140,6 +152,38 @@ class AppointmentControllerTest {
                 .andExpect(jsonPath("$.doctor.id").value(2L))
                 .andExpect(jsonPath("$.slot.id").value(5L))
                 .andExpect(jsonPath("$.slot.date").value("2026-12-11"));
+    }
+
+    @Test
+    @WithLocalUser(username = "patient@test.com", roles = "PATIENT")
+    void bookAppointment_shouldReturn409SlotAlreadyBookedWithoutSqlLeak_whenUniqueSlotIndexViolated() throws Exception {
+        var pgException = new SQLException(
+                "ERROR: duplicate key value violates unique constraint \"uq_appointments_confirmed_slot\"",
+                "23505");
+        var hibernateCve = new ConstraintViolationException("could not execute statement", pgException, "uq_appointments_confirmed_slot");
+        when(appointmentService.bookAppointment(eq(1L), eq(2L), eq(5L), eq(LocalDate.of(2026, 12, 11)),
+                eq("Chest tightness"), eq(account("patient@test.com"))))
+                .thenThrow(new DataIntegrityViolationException("could not execute statement", hibernateCve));
+
+        String json = """
+                {
+                    "patientId": 1,
+                    "doctorId": 2,
+                    "slotId": 5,
+                    "appointmentDate": "2026-12-11",
+                    "reason": "Chest tightness"
+                }
+                """;
+
+        mockMvc.perform(post("/api/appointments").with(csrf())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json))
+                .andExpect(status().isConflict())
+                .andExpect(header().string(HttpHeaders.CACHE_CONTROL, "no-store"))
+                .andExpect(jsonPath("$.status").value(409))
+                .andExpect(jsonPath("$.code").value("SLOT_ALREADY_BOOKED"))
+                .andExpect(jsonPath("$.message").value("This appointment slot is already booked. Please choose another available slot."))
+                .andExpect(content().string(not(containsString("uq_appointments_confirmed_slot"))));
     }
 
     @Test
@@ -249,6 +293,7 @@ class AppointmentControllerTest {
 
         mockMvc.perform(get("/api/appointments"))
                 .andExpect(status().isOk())
+                .andExpect(header().string(HttpHeaders.CACHE_CONTROL, "no-store"))
                 .andExpect(jsonPath("$[0].id").value(100L))
                 .andExpect(jsonPath("$[0].status").value("CONFIRMED"))
                 .andExpect(jsonPath("$[0].patient.user.email").value("patient@test.com"));
@@ -318,6 +363,7 @@ class AppointmentControllerTest {
 
         mockMvc.perform(get("/api/appointments/100"))
                 .andExpect(status().isOk())
+                .andExpect(header().string(HttpHeaders.CACHE_CONTROL, "no-store"))
                 .andExpect(jsonPath("$.id").value(100L))
                 .andExpect(jsonPath("$.status").value("CONFIRMED"));
     }
@@ -358,8 +404,9 @@ class AppointmentControllerTest {
 
     @Test
     @WithLocalUser(username = "patient@test.com", roles = "PATIENT")
-    void cancelAppointment_shouldReturn200_whenPatientCancels() throws Exception {
-        Appointment app = createMockAppointment(100L, AppointmentStatus.CANCELLED);
+    void cancelAppointment_shouldReturn200_whenPatientCancelsWithoutBody() throws Exception {
+        Appointment app = createMockAppointment(100L, AppointmentStatus.CONFIRMED);
+        app.markCancelled(null, Instant.parse("2026-11-12T10:00:00Z"), 10L, Role.PATIENT, AppointmentSlotOutcome.RELEASED);
         app.getSlot().setStatus(SlotStatus.AVAILABLE);
 
         when(appointmentService.cancelAppointment(100L, account("patient@test.com"), "ROLE_PATIENT"))
@@ -367,9 +414,76 @@ class AppointmentControllerTest {
 
         mockMvc.perform(patch("/api/appointments/100/cancel").with(csrf()))
                 .andExpect(status().isOk())
+                .andExpect(header().string(HttpHeaders.CACHE_CONTROL, "no-store"))
+                .andExpect(header().string(HttpHeaders.PRAGMA, "no-cache"))
+                .andExpect(header().string("X-Content-Type-Options", "nosniff"))
                 .andExpect(jsonPath("$.id").value(100L))
                 .andExpect(jsonPath("$.status").value("CANCELLED"))
+                .andExpect(jsonPath("$.cancelledAt").value("2026-11-12T10:00:00Z"))
+                .andExpect(jsonPath("$.cancelledByRole").value("PATIENT"))
+                .andExpect(jsonPath("$.cancellationSlotOutcome").value("RELEASED"))
+                .andExpect(jsonPath("$.cancelledByUserId").doesNotExist())
                 .andExpect(jsonPath("$.slot.status").value("AVAILABLE"));
+    }
+
+    @Test
+    @WithLocalUser(username = "patient@test.com", roles = "PATIENT")
+    void cancelAppointment_shouldAcceptReasonBodyAndHideCancelledByUserId() throws Exception {
+        Appointment app = createMockAppointment(100L, AppointmentStatus.CONFIRMED);
+        app.markCancelled("Need to reschedule", Instant.parse("2026-11-12T10:00:00Z"), 10L, Role.PATIENT, AppointmentSlotOutcome.RELEASED);
+        app.getSlot().setStatus(SlotStatus.AVAILABLE);
+
+        when(appointmentService.cancelAppointment(100L, account("patient@test.com"), "ROLE_PATIENT", "Need to reschedule"))
+                .thenReturn(app);
+
+        mockMvc.perform(patch("/api/appointments/100/cancel").with(csrf())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"reason\":\"Need to reschedule\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.cancellationReason").value("Need to reschedule"))
+                .andExpect(jsonPath("$.cancelledByRole").value("PATIENT"))
+                .andExpect(jsonPath("$.cancellationSlotOutcome").value("RELEASED"))
+                .andExpect(jsonPath("$.cancelledByUserId").doesNotExist());
+    }
+
+    @Test
+    @WithLocalUser(username = "patient@test.com", roles = "PATIENT")
+    void cancelAppointment_shouldReturn400_whenReasonExceeds500Chars() throws Exception {
+        String overLimit = "a".repeat(501);
+        mockMvc.perform(patch("/api/appointments/100/cancel").with(csrf())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"reason\":\"" + overLimit + "\"}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(header().string(HttpHeaders.CACHE_CONTROL, "no-store"))
+                .andExpect(jsonPath("$.status").value(400))
+                .andExpect(jsonPath("$.errors.reason").value("Cancellation reason cannot exceed 500 characters"));
+        verifyNoInteractions(appointmentService);
+    }
+
+    @Test
+    @WithLocalUser(username = "patient@test.com", roles = "PATIENT")
+    void cancelAppointment_shouldReturn400_whenReasonContainsEmbeddedNul() throws Exception {
+        mockMvc.perform(patch("/api/appointments/100/cancel").with(csrf())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"reason\":\"Reschedule\\u0000visit\"}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(header().string(HttpHeaders.CACHE_CONTROL, "no-store"))
+                .andExpect(jsonPath("$.status").value(400))
+                .andExpect(jsonPath("$.errors.reason").value("Cancellation reason cannot contain NUL characters"));
+        verifyNoInteractions(appointmentService);
+    }
+
+    @Test
+    @WithLocalUser(username = "patient@test.com", roles = "PATIENT")
+    void cancelAppointment_shouldReturn400_whenJsonMalformed() throws Exception {
+        mockMvc.perform(patch("/api/appointments/100/cancel").with(csrf())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{bad"))
+                .andExpect(status().isBadRequest())
+                .andExpect(header().string(HttpHeaders.CACHE_CONTROL, "no-store"))
+                .andExpect(jsonPath("$.status").value(400))
+                .andExpect(jsonPath("$.message").value("Invalid request body"));
+        verifyNoInteractions(appointmentService);
     }
 
     @Test
@@ -404,14 +518,39 @@ class AppointmentControllerTest {
 
     @Test
     @WithLocalUser(username = "patient@test.com", roles = "PATIENT")
-    void cancelAppointment_shouldReturn400_whenAlreadyCancelled() throws Exception {
+    void cancelAppointment_shouldReturn200Idempotently_whenAlreadyCancelled() throws Exception {
+        Appointment app = createMockAppointment(100L, AppointmentStatus.CONFIRMED);
+        app.markCancelled("Earlier reason", Instant.parse("2026-11-12T08:00:00Z"), 10L, Role.PATIENT, AppointmentSlotOutcome.RELEASED);
+
         when(appointmentService.cancelAppointment(100L, account("patient@test.com"), "ROLE_PATIENT"))
-                .thenThrow(new BadRequestException("Only confirmed appointments can be cancelled"));
+                .thenReturn(app);
 
         mockMvc.perform(patch("/api/appointments/100/cancel").with(csrf()))
-                .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.status").value(400))
-                .andExpect(jsonPath("$.message").value("Only confirmed appointments can be cancelled"));
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("CANCELLED"))
+                .andExpect(jsonPath("$.cancellationReason").value("Earlier reason"));
+    }
+
+    @Test
+    @WithLocalUser(username = "patient@test.com", roles = "PATIENT")
+    void cancelAppointment_shouldReturn409_whenTerminalOrWindowClosed() throws Exception {
+        when(appointmentService.cancelAppointment(100L, account("patient@test.com"), "ROLE_PATIENT"))
+                .thenThrow(new ConflictException("APPOINTMENT_NOT_CANCELLABLE", "Appointment cannot be cancelled in its current status"));
+
+        mockMvc.perform(patch("/api/appointments/100/cancel").with(csrf()))
+                .andExpect(status().isConflict())
+                .andExpect(header().string(HttpHeaders.CACHE_CONTROL, "no-store"))
+                .andExpect(jsonPath("$.status").value(409))
+                .andExpect(jsonPath("$.code").value("APPOINTMENT_NOT_CANCELLABLE"));
+
+        when(appointmentService.cancelAppointment(101L, account("patient@test.com"), "ROLE_PATIENT"))
+                .thenThrow(new ConflictException("APPOINTMENT_CANCELLATION_WINDOW_CLOSED",
+                        "Appointment can no longer be cancelled because its start time has passed"));
+
+        mockMvc.perform(patch("/api/appointments/101/cancel").with(csrf()))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.status").value(409))
+                .andExpect(jsonPath("$.code").value("APPOINTMENT_CANCELLATION_WINDOW_CLOSED"));
     }
 
     @Test
@@ -446,6 +585,7 @@ class AppointmentControllerTest {
 
         mockMvc.perform(patch("/api/appointments/100/complete").with(csrf()))
                 .andExpect(status().isOk())
+                .andExpect(header().string(HttpHeaders.CACHE_CONTROL, "no-store"))
                 .andExpect(jsonPath("$.id").value(100L))
                 .andExpect(jsonPath("$.status").value("COMPLETED"));
     }

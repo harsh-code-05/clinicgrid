@@ -1,23 +1,28 @@
 package com.harsh.hospitalmanagement.exception;
 
 import com.harsh.hospitalmanagement.config.SensitiveResponseHeaders;
+import org.hibernate.exception.ConstraintViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.converter.HttpMessageNotReadableException;
+import org.springframework.security.core.AuthenticationException;
 import org.springframework.web.HttpMediaTypeNotSupportedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
-import org.springframework.security.core.AuthenticationException;
-import com.harsh.hospitalmanagement.exception.ForbiddenException;
 import org.springframework.web.multipart.MaxUploadSizeExceededException;
 import org.springframework.web.multipart.MultipartException;
 
+import java.sql.SQLException;
 import java.time.LocalDateTime;
 import java.util.HashMap;
+import java.util.Locale;
 import java.util.Map;
 
 @RestControllerAdvice
 public class GlobalExceptionHandler {
+
+    private static final String CONFIRMED_SLOT_UNIQUE_INDEX = "uq_appointments_confirmed_slot";
 
     @ExceptionHandler(ResourceNotFoundException.class)
     public ResponseEntity<Map<String, Object>> handleResourceNotFound(
@@ -54,6 +59,20 @@ public class GlobalExceptionHandler {
         response.put("status", HttpStatus.BAD_REQUEST.value());
         response.put("message", "Validation failed");
         response.put("errors", errors);
+
+        return SensitiveResponseHeaders.apply(ResponseEntity.status(HttpStatus.BAD_REQUEST))
+                .body(response);
+    }
+
+    @ExceptionHandler(HttpMessageNotReadableException.class)
+    public ResponseEntity<Map<String, Object>> handleUnreadableBody(
+            HttpMessageNotReadableException ex) {
+
+        Map<String, Object> response = new HashMap<>();
+
+        response.put("timestamp", LocalDateTime.now());
+        response.put("status", HttpStatus.BAD_REQUEST.value());
+        response.put("message", "Invalid request body");
 
         return SensitiveResponseHeaders.apply(ResponseEntity.status(HttpStatus.BAD_REQUEST))
                 .body(response);
@@ -126,10 +145,40 @@ public class GlobalExceptionHandler {
 
         response.put("timestamp", LocalDateTime.now());
         response.put("status", HttpStatus.CONFLICT.value());
-        response.put("message", "A patient profile already exists or conflicts with an existing record");
+        if (isConfirmedSlotConflict(ex)) {
+            response.put("code", "SLOT_ALREADY_BOOKED");
+            response.put("message", "This appointment slot is already booked. Please choose another available slot.");
+        } else {
+            response.put("message", "A patient profile already exists or conflicts with an existing record");
+        }
 
         return SensitiveResponseHeaders.apply(ResponseEntity.status(HttpStatus.CONFLICT))
                 .body(response);
+    }
+
+    private static boolean isConfirmedSlotConflict(Throwable ex) {
+        Throwable cursor = ex;
+        for (int depth = 0; cursor != null && depth < 16; depth++) {
+            if (cursor instanceof ConstraintViolationException cve) {
+                String constraintName = cve.getConstraintName();
+                if (constraintName != null
+                        && constraintName.toLowerCase(Locale.ROOT).contains(CONFIRMED_SLOT_UNIQUE_INDEX)) {
+                    return true;
+                }
+            }
+            if (cursor instanceof SQLException sqlEx && "23505".equals(sqlEx.getSQLState())) {
+                String msg = sqlEx.getMessage();
+                if (msg != null && msg.toLowerCase(Locale.ROOT).contains(CONFIRMED_SLOT_UNIQUE_INDEX)) {
+                    return true;
+                }
+            }
+            String message = cursor.getMessage();
+            if (message != null && message.toLowerCase(Locale.ROOT).contains(CONFIRMED_SLOT_UNIQUE_INDEX)) {
+                return true;
+            }
+            cursor = cursor.getCause();
+        }
+        return false;
     }
 
     @ExceptionHandler(MaxUploadSizeExceededException.class)

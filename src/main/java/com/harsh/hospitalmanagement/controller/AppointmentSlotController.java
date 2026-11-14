@@ -1,6 +1,6 @@
 package com.harsh.hospitalmanagement.controller;
 
-import com.harsh.hospitalmanagement.security.LocalAccount;
+import com.harsh.hospitalmanagement.config.SensitiveResponseHeaders;
 import com.harsh.hospitalmanagement.dto.AppointmentSlotResponse;
 import com.harsh.hospitalmanagement.dto.DoctorResponse;
 import com.harsh.hospitalmanagement.dto.SpecializationResponse;
@@ -9,10 +9,12 @@ import com.harsh.hospitalmanagement.entity.AppointmentSlot;
 import com.harsh.hospitalmanagement.entity.Doctor;
 import com.harsh.hospitalmanagement.entity.Specialization;
 import com.harsh.hospitalmanagement.entity.User;
+import com.harsh.hospitalmanagement.exception.ForbiddenException;
+import com.harsh.hospitalmanagement.security.LocalAccount;
 import com.harsh.hospitalmanagement.service.AppointmentSlotService;
 import org.springframework.http.ResponseEntity;
-import org.springframework.web.bind.annotation.*;
 import org.springframework.security.core.Authentication;
+import org.springframework.web.bind.annotation.*;
 
 import java.time.LocalDate;
 import java.util.List;
@@ -49,6 +51,22 @@ public class AppointmentSlotController {
         AppointmentSlot slot = appointmentSlotService.getSlotById(id);
 
         return ResponseEntity.ok(toResponse(slot));
+    }
+
+    @PatchMapping("/{id}/unblock")
+    public ResponseEntity<AppointmentSlotResponse> unblockSlot(
+            @PathVariable Long id,
+            Authentication authentication) {
+
+        boolean admin = authentication != null && authentication.getAuthorities().stream()
+                .anyMatch(a -> a.getAuthority().equals("ROLE_ADMIN"));
+        if (!admin) {
+            throw new ForbiddenException("Only admins can unblock appointment slots");
+        }
+
+        AppointmentSlot slot = appointmentSlotService.unblockSlot(id, LocalAccount.require(authentication));
+        return SensitiveResponseHeaders.apply(ResponseEntity.ok())
+                .body(toResponse(slot));
     }
 
     private AppointmentSlotResponse toResponse(AppointmentSlot slot) {

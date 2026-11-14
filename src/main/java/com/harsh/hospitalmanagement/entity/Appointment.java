@@ -1,7 +1,9 @@
 package com.harsh.hospitalmanagement.entity;
 
+import com.harsh.hospitalmanagement.enums.AppointmentSlotOutcome;
 import com.harsh.hospitalmanagement.enums.AppointmentStatus;
 import com.harsh.hospitalmanagement.enums.ConsultationMode;
+import com.harsh.hospitalmanagement.enums.Role;
 import jakarta.persistence.*;
 import lombok.AccessLevel;
 import lombok.AllArgsConstructor;
@@ -10,6 +12,7 @@ import lombok.NoArgsConstructor;
 import lombok.Setter;
 
 import java.math.BigDecimal;
+import java.time.Instant;
 import java.time.LocalDateTime;
 import java.util.UUID;
 
@@ -31,6 +34,23 @@ public class Appointment {
 
     @Enumerated(EnumType.STRING)
     private AppointmentStatus status;
+
+    @Column(name = "cancellation_reason", length = 500)
+    private String cancellationReason;
+
+    @Column(name = "cancelled_at")
+    private Instant cancelledAt;
+
+    @Column(name = "cancelled_by_user_id")
+    private Long cancelledByUserId;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "cancelled_by_role", length = 16)
+    private Role cancelledByRole;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "cancellation_slot_outcome", length = 32)
+    private AppointmentSlotOutcome cancellationSlotOutcome;
 
     @ManyToOne
     @JoinColumn(name = "patient_id", nullable = false)
@@ -69,6 +89,20 @@ public class Appointment {
     @Setter(AccessLevel.NONE)
     @Column(name = "offer_version", updatable = false)
     private UUID offerVersion;
+
+    public void markCancelled(
+            String reason,
+            Instant cancelledAt,
+            Long cancelledByUserId,
+            Role cancelledByRole,
+            AppointmentSlotOutcome slotOutcome) {
+        this.status = AppointmentStatus.CANCELLED;
+        this.cancellationReason = reason;
+        this.cancelledAt = cancelledAt;
+        this.cancelledByUserId = cancelledByUserId;
+        this.cancelledByRole = cancelledByRole;
+        this.cancellationSlotOutcome = slotOutcome;
+    }
 
     public void captureOffer(AppointmentSlot offer) {
         if (id != null || offerVersion != null || offer.getOfferVersion() == null) {

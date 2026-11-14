@@ -30,6 +30,37 @@ public interface AppointmentRepository extends JpaRepository<Appointment, Long> 
             @Param("endTime") LocalTime endTime);
 
     @Query("""
+            SELECT COUNT(a) > 0 FROM Appointment a JOIN a.slot s
+            WHERE a.doctor.id = :doctorId AND s.date = :date
+            AND a.status = com.harsh.hospitalmanagement.enums.AppointmentStatus.CONFIRMED
+            AND a.id <> :excludedAppointmentId
+            AND s.startTime < :endTime AND s.endTime > :startTime
+            """)
+    boolean existsOverlappingConfirmedAppointmentExcludingId(
+            @Param("doctorId") Long doctorId,
+            @Param("date") LocalDate date,
+            @Param("startTime") LocalTime startTime,
+            @Param("endTime") LocalTime endTime,
+            @Param("excludedAppointmentId") Long excludedAppointmentId);
+
+    @Query("""
+            SELECT COUNT(a) > 0 FROM Appointment a
+            WHERE a.slot.id = :slotId
+            AND a.id <> :excludedAppointmentId
+            AND a.status = com.harsh.hospitalmanagement.enums.AppointmentStatus.CONFIRMED
+            """)
+    boolean existsOtherConfirmedAppointmentForSlot(
+            @Param("slotId") Long slotId,
+            @Param("excludedAppointmentId") Long excludedAppointmentId);
+
+    @Query("""
+            SELECT COUNT(a) > 0 FROM Appointment a
+            WHERE a.slot.id = :slotId
+            AND a.status = com.harsh.hospitalmanagement.enums.AppointmentStatus.CONFIRMED
+            """)
+    boolean existsConfirmedAppointmentForSlot(@Param("slotId") Long slotId);
+
+    @Query("""
             SELECT a FROM Appointment a JOIN FETCH a.slot s
             WHERE a.doctor.id = :doctorId AND s.date = :date
             AND a.status = com.harsh.hospitalmanagement.enums.AppointmentStatus.CONFIRMED

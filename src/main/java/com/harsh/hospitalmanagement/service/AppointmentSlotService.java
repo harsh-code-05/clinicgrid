@@ -1,6 +1,5 @@
 package com.harsh.hospitalmanagement.service;
 
-import com.harsh.hospitalmanagement.security.LocalAccount;
 import com.harsh.hospitalmanagement.entity.AppointmentSlot;
 import com.harsh.hospitalmanagement.entity.DoctorAvailability;
 import com.harsh.hospitalmanagement.enums.SlotStatus;
@@ -12,51 +11,95 @@ import com.harsh.hospitalmanagement.repository.AppointmentRepository;
 import com.harsh.hospitalmanagement.repository.AppointmentSlotRepository;
 import com.harsh.hospitalmanagement.repository.DoctorAvailabilityRepository;
 import com.harsh.hospitalmanagement.repository.DoctorRepository;
+import com.harsh.hospitalmanagement.security.LocalAccount;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Clock;
 import java.time.Duration;
+import java.time.Instant;
 import java.time.LocalDate;
-import java.time.LocalDateTime;
 import java.time.LocalTime;
+import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
+import java.util.UUID;
 
 @Service
 public class AppointmentSlotService {
 
+    private static final String DEFAULT_SCHEDULING_ZONE_ID = "Asia/Kolkata";
     private static final Duration SLOT_DURATION = Duration.ofMinutes(30);
 
     private final AppointmentSlotRepository appointmentSlotRepository;
     private final DoctorAvailabilityRepository doctorAvailabilityRepository;
     private final DoctorRepository doctorRepository;
     private final AppointmentRepository appointmentRepository;
+    private final Clock clock;
+
+    @Autowired
+    public AppointmentSlotService(
+            AppointmentSlotRepository appointmentSlotRepository,
+            DoctorAvailabilityRepository doctorAvailabilityRepository,
+            DoctorRepository doctorRepository,
+            AppointmentRepository appointmentRepository,
+            @Value("${hms.scheduling.zone-id:Asia/Kolkata}") String schedulingZoneId) {
+        this(
+                appointmentSlotRepository,
+                doctorAvailabilityRepository,
+                doctorRepository,
+                appointmentRepository,
+                Clock.system(ZoneId.of(schedulingZoneId))
+        );
+    }
 
     public AppointmentSlotService(
             AppointmentSlotRepository appointmentSlotRepository,
             DoctorAvailabilityRepository doctorAvailabilityRepository,
             DoctorRepository doctorRepository,
             AppointmentRepository appointmentRepository) {
+        this(
+                appointmentSlotRepository,
+                doctorAvailabilityRepository,
+                doctorRepository,
+                appointmentRepository,
+                Clock.system(ZoneId.of(DEFAULT_SCHEDULING_ZONE_ID))
+        );
+    }
 
+    AppointmentSlotService(
+            AppointmentSlotRepository appointmentSlotRepository,
+            DoctorAvailabilityRepository doctorAvailabilityRepository,
+            DoctorRepository doctorRepository,
+            AppointmentRepository appointmentRepository,
+            Clock clock) {
         this.appointmentSlotRepository = appointmentSlotRepository;
         this.doctorAvailabilityRepository = doctorAvailabilityRepository;
         this.doctorRepository = doctorRepository;
         this.appointmentRepository = appointmentRepository;
+        this.clock = Objects.requireNonNull(clock, "Clock is required");
     }
 
+    @Transactional(readOnly = true)
     public List<AppointmentSlot> getAvailableSlots(Long doctorId, LocalDate date) {
-        if (date != null) {
-            return appointmentSlotRepository.findBookableByDoctorAndDate(doctorId, date);
-        }
-        return appointmentSlotRepository.findBookableByDoctor(doctorId);
+        List<AppointmentSlot> candidates = date != null
+                ? appointmentSlotRepository.findBookableByDoctorAndDate(doctorId, date)
+                : appointmentSlotRepository.findBookableByDoctor(doctorId);
+        Instant now = Instant.now(clock);
+        return candidates.stream()
+                .filter(slot -> now.isBefore(slotStartInstant(slot)))
+                .toList();
     }
 
     @Transactional(readOnly = true)
     public List<AppointmentSlot> getDiscoverableOffers(Long doctorId, LocalDate date) {
-        LocalDateTime now = LocalDateTime.now();
+        Instant now = Instant.now(clock);
         return appointmentSlotRepository.findDiscoverableOffers(doctorId, date).stream()
-                .filter(slot -> !slot.getDate().atTime(slot.getStartTime()).isBefore(now))
+                .filter(slot -> now.isBefore(slotStartInstant(slot)))
                 .toList();
     }
 
@@ -64,6 +107,43 @@ public class AppointmentSlotService {
         return appointmentSlotRepository.findById(id)
                 .orElseThrow(() ->
                         new ResourceNotFoundException("Appointment slot not found"));
+    }
+
+    @Transactional(isolation = Isolation.READ_COMMITTED)
+    public AppointmentSlot unblockSlot(Long slotId, LocalAccount actor) {
+        if (actor == null) {
+            throw new ForbiddenException("Admin authentication is required");
+        }
+        long doctorId = appointmentSlotRepository.findDoctorIdById(slotId)
+                .orElseThrow(() -> new ResourceNotFoundException("Appointment slot not found"));
+        doctorRepository.findByIdForUpdate(doctorId)
+                .orElseThrow(() -> new ResourceNotFoundException("Doctor not found"));
+
+        AppointmentSlot slot = appointmentSlotRepository.findByIdForUpdate(slotId)
+                .orElseThrow(() -> new ResourceNotFoundException("Appointment slot not found"));
+        if (!Objects.equals(slot.getDoctor().getId(), doctorId)) {
+            throw new ConflictException("SLOT_CHANGED", "Appointment slot changed while acquiring schedule lock");
+        }
+        if (slot.getStatus() != SlotStatus.BLOCKED) {
+            throw new ConflictException("SLOT_NOT_BLOCKED", "Only blocked appointment slots can be unblocked");
+        }
+        Instant now = Instant.now(clock);
+        if (!now.isBefore(slotStartInstant(slot))) {
+            throw new ConflictException("SLOT_PAST", "Cannot unblock an appointment slot in the past");
+        }
+        if (appointmentRepository.existsConfirmedAppointmentForSlot(slot.getId())
+                || appointmentRepository.existsOverlappingConfirmedAppointment(
+                        doctorId, slot.getDate(), slot.getStartTime(), slot.getEndTime())) {
+            throw new ConflictException(
+                    "SLOT_CONFLICTING_BOOKING",
+                    "Cannot unblock slot while an overlapping confirmed appointment exists");
+        }
+        slot.setStatus(SlotStatus.AVAILABLE);
+        slot.setRetired(true);
+        if (slot.getOfferVersion() != null) {
+            slot.setOfferVersion(UUID.randomUUID());
+        }
+        return appointmentSlotRepository.save(slot);
     }
 
     @Transactional(isolation = Isolation.READ_COMMITTED)
@@ -106,12 +186,15 @@ public class AppointmentSlotService {
 
         long slotCount = Duration.between(currentTime, endTime).dividedBy(SLOT_DURATION);
         LocalDate date = availability.getDate();
+        Instant now = Instant.now(clock);
         List<AppointmentSlot> slots = new ArrayList<>();
 
         for (long i = 0; i < slotCount; i++) {
             LocalTime slotEndTime = currentTime.plus(SLOT_DURATION);
+            Instant slotStart = date.atTime(currentTime).atZone(clock.getZone()).toInstant();
 
-            if (!appointmentRepository.existsOverlappingConfirmedAppointment(doctorId, date, currentTime, slotEndTime)
+            if (now.isBefore(slotStart)
+                    && !appointmentRepository.existsOverlappingConfirmedAppointment(doctorId, date, currentTime, slotEndTime)
                     && !appointmentSlotRepository.existsOverlappingBookableSlot(doctorId, date, currentTime, slotEndTime)) {
                 AppointmentSlot slot = appointmentSlotRepository.findByDoctor_IdAndDateAndStartTimeAndEndTime(
                         doctorId, date, currentTime, slotEndTime).orElse(null);
@@ -141,5 +224,9 @@ public class AppointmentSlotService {
         }
 
         return slots;
+    }
+
+    private Instant slotStartInstant(AppointmentSlot slot) {
+        return slot.getDate().atTime(slot.getStartTime()).atZone(clock.getZone()).toInstant();
     }
 }

@@ -11,6 +11,7 @@ import com.harsh.hospitalmanagement.enums.AuditEventType;
 import com.harsh.hospitalmanagement.enums.Role;
 import com.harsh.hospitalmanagement.enums.SlotStatus;
 import com.harsh.hospitalmanagement.exception.BadRequestException;
+import com.harsh.hospitalmanagement.exception.ConflictException;
 import com.harsh.hospitalmanagement.repository.AppointmentRepository;
 import com.harsh.hospitalmanagement.repository.DoctorRepository;
 import jakarta.persistence.EntityManager;
@@ -46,6 +47,8 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
+import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.reset;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 
@@ -77,22 +80,100 @@ class AppointmentConcurrencyTest {
 
     @Test
     void cancellationWinsAgainstConcurrentCompletion_withoutCompletingAReleasedSlot() throws Exception {
-        assertSerializedTransitions(false, true);
+        assertSerializedTransitions(false, true, LocalDate.now().plusDays(1));
     }
 
     @Test
     void completionWinsAgainstConcurrentCancellation_withoutReleasingTheOccupiedSlot() throws Exception {
-        assertSerializedTransitions(true, false);
+        assertSerializedTransitions(true, false, LocalDate.now().minusDays(1));
     }
 
     @Test
-    void concurrentCancellations_onlyReleaseTheSlotAndAuditOnce() throws Exception {
-        assertSerializedTransitions(false, false);
+    void concurrentCancellations_onlyReleaseTheSlotAuditOnceAndReturnIdempotently() throws Exception {
+        reset(auditLogService);
+        TransactionTemplate transactions = new TransactionTemplate(transactionManager);
+        Long appointmentId = transactions.execute(ignored -> createConfirmedAppointment(LocalDate.now().plusDays(1)));
+        CountDownLatch winnerHasLock = new CountDownLatch(1);
+        CountDownLatch contenderStarted = new CountDownLatch(1);
+        CountDownLatch releaseWinner = new CountDownLatch(1);
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+
+        try {
+            Future<Appointment> winner = executor.submit(() -> transactions.execute(ignored -> {
+                long doctorId = appointmentRepository.findDoctorIdById(appointmentId).orElseThrow();
+                doctorRepository.findByIdForUpdate(doctorId).orElseThrow();
+                winnerHasLock.countDown();
+                await(releaseWinner);
+                return appointmentService.cancelAppointment(
+                        appointmentId, account("admin@test.invalid"), "ROLE_ADMIN", "First reason");
+            }));
+            assertThat(winnerHasLock.await(5, TimeUnit.SECONDS)).isTrue();
+
+            Future<Appointment> contender = executor.submit(() -> {
+                contenderStarted.countDown();
+                return appointmentService.cancelAppointment(
+                        appointmentId, account("admin@test.invalid"), "ROLE_ADMIN", "Second retry reason");
+            });
+            assertThat(contenderStarted.await(5, TimeUnit.SECONDS)).isTrue();
+            assertThrows(TimeoutException.class, () -> contender.get(300, TimeUnit.MILLISECONDS),
+                    "The second cancellation must wait while the first transaction holds the doctor lock");
+
+            releaseWinner.countDown();
+            Appointment winnerResult = winner.get(10, TimeUnit.SECONDS);
+            Appointment contenderResult = contender.get(10, TimeUnit.SECONDS);
+
+            assertThat(winnerResult.getStatus()).isEqualTo(AppointmentStatus.CANCELLED);
+            assertThat(contenderResult.getStatus()).isEqualTo(AppointmentStatus.CANCELLED);
+            assertThat(contenderResult.getCancellationReason()).isEqualTo("First reason");
+            assertThat(contenderResult.getCancelledAt()).isEqualTo(winnerResult.getCancelledAt());
+            assertThat(contenderResult.getCancellationSlotOutcome()).isEqualTo(winnerResult.getCancellationSlotOutcome());
+
+            verify(auditLogService, times(1)).logEvent(
+                    eq(AuditEventType.ADMIN_CANCELLED_APPOINTMENT),
+                    eq("admin@test.invalid"), eq("ROLE_ADMIN"), eq("Appointment"),
+                    eq(appointmentId), any(), isNull());
+            verify(auditLogService, times(1)).logEvent(any(), any(), any(), any(), any(), any(), any());
+        } finally {
+            releaseWinner.countDown();
+            executor.shutdownNow();
+            assertThat(executor.awaitTermination(10, TimeUnit.SECONDS)).isTrue();
+        }
     }
 
-    private void assertSerializedTransitions(boolean winnerCompletes, boolean contenderCompletes) throws Exception {
+    @Test
+    void cancellationRollsBackAppointmentAndSlotMutations_whenAuditLoggingFails() {
+        reset(auditLogService);
         TransactionTemplate transactions = new TransactionTemplate(transactionManager);
-        Long appointmentId = transactions.execute(ignored -> createConfirmedAppointment());
+        Long appointmentId = transactions.execute(ignored -> createConfirmedAppointment(LocalDate.now().plusDays(1)));
+
+        doThrow(new IllegalStateException("Audit write failed"))
+                .when(auditLogService).logEvent(any(), any(), any(), any(), any(), any(), any());
+
+        try {
+            assertThatThrownBy(() -> appointmentService.cancelAppointment(
+                    appointmentId, account("admin@test.invalid"), "ROLE_ADMIN", "Need reschedule"))
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessage("Audit write failed");
+
+            transactions.executeWithoutResult(ignored -> {
+                Appointment stored = appointmentRepository.findById(appointmentId).orElseThrow();
+                assertThat(stored.getStatus()).isEqualTo(AppointmentStatus.CONFIRMED);
+                assertThat(stored.getCancellationReason()).isNull();
+                assertThat(stored.getCancelledAt()).isNull();
+                assertThat(stored.getSlot().getStatus()).isEqualTo(SlotStatus.BOOKED);
+            });
+        } finally {
+            reset(auditLogService);
+        }
+    }
+
+    private void assertSerializedTransitions(
+            boolean winnerCompletes,
+            boolean contenderCompletes,
+            LocalDate slotDate) throws Exception {
+        reset(auditLogService);
+        TransactionTemplate transactions = new TransactionTemplate(transactionManager);
+        Long appointmentId = transactions.execute(ignored -> createConfirmedAppointment(slotDate));
         CountDownLatch winnerHasLock = new CountDownLatch(1);
         CountDownLatch contenderStarted = new CountDownLatch(1);
         CountDownLatch releaseWinner = new CountDownLatch(1);
@@ -121,12 +202,18 @@ class AppointmentConcurrencyTest {
             AppointmentStatus expectedStatus = winnerCompletes
                     ? AppointmentStatus.COMPLETED : AppointmentStatus.CANCELLED;
             assertThat(winner.get(10, TimeUnit.SECONDS)).isEqualTo(expectedStatus);
-            assertThatThrownBy(() -> contender.get(10, TimeUnit.SECONDS))
-                    .isInstanceOf(ExecutionException.class)
-                    .hasCauseInstanceOf(BadRequestException.class)
-                    .hasRootCauseMessage(contenderCompletes
-                            ? "Only confirmed appointments can be completed"
-                            : "Only confirmed appointments can be cancelled");
+            if (contenderCompletes) {
+                assertThatThrownBy(() -> contender.get(10, TimeUnit.SECONDS))
+                        .isInstanceOf(ExecutionException.class)
+                        .hasCauseInstanceOf(BadRequestException.class)
+                        .hasRootCauseMessage("Only confirmed appointments can be completed");
+            } else {
+                assertThatThrownBy(() -> contender.get(10, TimeUnit.SECONDS))
+                        .isInstanceOf(ExecutionException.class)
+                        .hasCauseInstanceOf(ConflictException.class)
+                        .satisfies(ex -> assertThat(((ConflictException) ex.getCause()).getCode())
+                                .isEqualTo("APPOINTMENT_NOT_CANCELLABLE"));
+            }
 
             transactions.executeWithoutResult(ignored -> {
                 Appointment stored = appointmentRepository.findById(appointmentId).orElseThrow();
@@ -154,7 +241,7 @@ class AppointmentConcurrencyTest {
                 : appointmentService.cancelAppointment(appointmentId, account("admin@test.invalid"), "ROLE_ADMIN");
     }
 
-    private Long createConfirmedAppointment() {
+    private Long createConfirmedAppointment(LocalDate slotDate) {
         String suffix = UUID.randomUUID().toString();
         User patientUser = new User();
         patientUser.setEmail("patient-" + suffix + "@test.invalid");
@@ -182,7 +269,7 @@ class AppointmentConcurrencyTest {
 
         AppointmentSlot slot = new AppointmentSlot();
         slot.setDoctor(doctor);
-        slot.setDate(LocalDate.now().minusDays(1));
+        slot.setDate(slotDate);
         slot.setStartTime(LocalTime.of(9, 0));
         slot.setEndTime(LocalTime.of(9, 30));
         slot.setStatus(SlotStatus.BOOKED);
