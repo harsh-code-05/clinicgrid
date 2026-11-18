@@ -79,6 +79,8 @@ async function setup(draft = { bookingReason: 'Routine visit' }) {
     Fragment: Symbol('fragment'),
     useAuth: () => ({ user, formDrafts }),
     useNavigate: () => () => {},
+    useSearchParams: () => [new URLSearchParams()],
+    useLocation: () => ({ search: '', state: null }),
     useState(initial) {
       const cell = hooks[cursor++] ??= { value: typeof initial === 'function' ? initial() : initial };
       return [cell.value, (next) => {

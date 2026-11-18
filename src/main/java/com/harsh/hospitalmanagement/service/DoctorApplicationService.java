@@ -6,6 +6,7 @@ import com.harsh.hospitalmanagement.entity.Doctor;
 import com.harsh.hospitalmanagement.entity.DoctorApplication;
 import com.harsh.hospitalmanagement.entity.Specialization;
 import com.harsh.hospitalmanagement.entity.User;
+import com.harsh.hospitalmanagement.enums.VerificationStatus;
 import com.harsh.hospitalmanagement.enums.ApplicationStatus;
 import com.harsh.hospitalmanagement.enums.Role;
 import com.harsh.hospitalmanagement.exception.BadRequestException;
@@ -52,7 +53,9 @@ public class DoctorApplicationService {
     @Transactional
     public DoctorApplication registerDoctor(DoctorRegisterRequest request) {
 
-        if (userRepository.existsByEmail(request.getEmail())) {
+        String trimmed = request.getEmail().trim();
+        String normalizedEmail = trimmed.toLowerCase(java.util.Locale.ROOT);
+        if (userRepository.existsByEmail(trimmed) || userRepository.existsByEmailIgnoreCase(normalizedEmail)) {
             throw new BadRequestException("Email already exists");
         }
 
@@ -62,7 +65,7 @@ public class DoctorApplicationService {
 
         // Create user with PATIENT role — never DOCTOR until approved
         User user = new User();
-        user.setEmail(request.getEmail());
+        user.setEmail(normalizedEmail);
         user.setPassword(passwordEncoder.encode(request.getPassword()));
         user.setRole(Role.PATIENT);
         user = userRepository.save(user);
@@ -156,14 +159,22 @@ public class DoctorApplicationService {
         applicant.setRole(Role.DOCTOR);
         userRepository.save(applicant);
 
-        // Create the Doctor profile using data from the application
-        Doctor doctor = new Doctor();
-        doctor.setUser(applicant);
+        // Create or update the Doctor profile using data from the application
+        Doctor doctor = doctorRepository.findByUser_Id(applicant.getId())
+                .orElseGet(() -> {
+                    Doctor newDoc = new Doctor();
+                    newDoc.setUser(applicant);
+                    newDoc.setVerificationStatus(VerificationStatus.UNVERIFIED);
+                    return newDoc;
+                });
         doctor.setSpecialization(application.getSpecialization());
         doctor.setFirstName(application.getFirstName());
         doctor.setLastName(application.getLastName());
         doctor.setQualification(application.getQualification());
         doctor.setExperience(application.getExperience());
+        if (doctor.getVerificationStatus() == null) {
+            doctor.setVerificationStatus(VerificationStatus.UNVERIFIED);
+        }
         doctorRepository.save(doctor);
 
         // Update application state

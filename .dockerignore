@@ -1,0 +1,14 @@
+**/.git
+**/.gitignore
+**/.gitattributes
+**/.idea
+**/target
+**/frontend
+**/docs
+**/scratch
+**/scripts
+**/*.md
+**/*.log
+**/*.txt
+**/.env*
+**/*.iml

@@ -140,6 +140,7 @@ public class AppointmentController {
         doctorResponse.setLastName(doctor.getLastName());
         doctorResponse.setQualification(doctor.getQualification());
         doctorResponse.setExperience(doctor.getExperience());
+        doctorResponse.setVerificationStatus(doctor.getVerificationStatus());
         doctorResponse.setUser(doctorUserResponse);
         doctorResponse.setSpecialization(specializationResponse);
 

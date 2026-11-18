@@ -1,0 +1,4 @@
+org.springframework.boot.env.EnvironmentPostProcessor=\
+  com.harsh.hospitalmanagement.config.safety.DatabaseSafetyEnvironmentPostProcessor
+org.springframework.context.ApplicationContextInitializer=\
+  com.harsh.hospitalmanagement.config.safety.DatabaseSafetyApplicationContextInitializer

@@ -11,7 +11,7 @@ Phase 1 is for synthetic images. The adapter has no HTTP routes, database catalo
 | `hms.document-storage.key-directory` | Absolute directory on a **different** local fixed NTFS volume. |
 | `hms.document-storage.master-key-version` | Positive integer matching the active DPAPI file, such as version `1` for `v1.dpapi`. |
 
-Provision both directories with protected NTFS DACLs before enabling storage. Allow only the Windows identity that runs HMS, optionally with Local System and built-in Administrators. Use canonical paths outside Git checkouts and web roots. HMS verifies the directories and active key at startup and gives new subdirectories and files restrictive ACLs at creation. Enabling storage with missing, shared, or unsafe configuration fails startup.
+Provision both directories with protected NTFS DACLs before enabling storage. Allow strictly and exclusively the Windows identity that runs HMS (standing ACEs for Local System, built-in Administrators, or other principals will fail startup validation). Use canonical paths outside Git checkouts and web roots. HMS verifies the directories and active key at startup and gives new subdirectories and files restrictive ACLs at creation. Enabling storage with missing, shared, or unsafe configuration fails startup.
 
 The storage service uses the platform-neutral `PrivateFiles` boundary. Windows currently supplies the NTFS adapter and the DPAPI master-key provider. Oracle Linux deployment with storage enabled remains unsupported until both a secure POSIX filesystem adapter and a Linux master-key provider exist.
 

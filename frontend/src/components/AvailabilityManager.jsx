@@ -214,6 +214,9 @@ export default function AvailabilityManager({
 
   // Form validation for availability creation
   const validateForm = () => {
+    if (isDoctorMode && doctor?.verificationStatus === 'UNVERIFIED') {
+      return 'Your doctor account is currently pending verification. Availability cannot be scheduled until an administrator approves your account.';
+    }
     if (!activeDoctorId) {
       return 'Please select a doctor.';
     }
@@ -497,6 +500,15 @@ export default function AvailabilityManager({
           )}
         </div>
 
+        {isDoctorMode && doctor?.verificationStatus === 'UNVERIFIED' && (
+          <div className="am-alert am-alert-error" role="alert" style={{ marginBottom: '16px' }}>
+            <strong className="am-alert-label">Verification Required:</strong>{' '}
+            <span className="am-alert-message">
+              Your profile is pending verification. Availability creation and slot generation are disabled until an administrator reviews and approves your credentials.
+            </span>
+          </div>
+        )}
+
         {/* Availability Form */}
         <form onSubmit={handleCreateAvailability} className="am-form-layout" noValidate>
           <div className="am-form-grid">
@@ -571,7 +583,7 @@ export default function AvailabilityManager({
             <button
               type="submit"
               className="am-btn am-btn-primary"
-              disabled={formSubmitting || !activeDoctorId}
+              disabled={formSubmitting || !activeDoctorId || (isDoctorMode && doctor?.verificationStatus === 'UNVERIFIED')}
             >
               {formSubmitting ? 'Creating Availability...' : 'Create Availability Window'}
             </button>

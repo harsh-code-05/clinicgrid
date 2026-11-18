@@ -1,5 +1,7 @@
 package com.harsh.hospitalmanagement.service;
 
+import com.harsh.hospitalmanagement.config.safety.PostgresTestTarget;
+import com.harsh.hospitalmanagement.config.safety.RequiresDisposablePostgres;
 import com.harsh.hospitalmanagement.entity.Doctor;
 import com.harsh.hospitalmanagement.entity.DoctorVerificationDocument;
 import com.harsh.hospitalmanagement.entity.DoctorVerificationDocumentEvent;
@@ -37,7 +39,6 @@ import static com.sun.jna.platform.win32.AccCtrl.SE_OBJECT_TYPE.SE_FILE_OBJECT;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 import org.junit.jupiter.api.io.TempDir;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest;
@@ -90,10 +91,10 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-@EnabledIfEnvironmentVariable(named = "HMS_DOCUMENT_TEST_DATABASE", matches = ".+")
+@RequiresDisposablePostgres
 @DataJpaTest(properties = "spring.sql.init.mode=never", showSql = false)
 @AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
-@Import({DoctorManagementAccess.class, DoctorVerificationDocumentService.class, DoctorVerificationDocumentServicePostgresTest.StorageTestConfig.class})
+@Import({PostgresTestTarget.TestDataSourceConfiguration.class, DoctorManagementAccess.class, DoctorVerificationDocumentService.class, DoctorVerificationDocumentServicePostgresTest.StorageTestConfig.class})
 @DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)
 @Transactional(propagation = Propagation.NOT_SUPPORTED)
 class DoctorVerificationDocumentServicePostgresTest {
@@ -135,36 +136,17 @@ class DoctorVerificationDocumentServicePostgresTest {
     private User doctorUser2;
     private User adminUser;
     private User patientUser;
+    private Specialization spec;
     private ValidatedImage pngImage;
     private ValidatedImage jpegImage;
 
     @DynamicPropertySource
     static void configureDisposablePostgres(DynamicPropertyRegistry registry) {
-        String database = System.getenv("HMS_DOCUMENT_TEST_DATABASE");
-        if (database == null || !database.matches("hms_reconcile_validation_[0-9]{8}_[0-9]{6}_[0-9a-f]{8}")) {
-            throw new IllegalArgumentException("A disposable reconciliation database name is required");
-        }
-        if ("hospital_management".equalsIgnoreCase(database)) {
-            throw new IllegalStateException("Refusing to run tests against production hospital_management database");
-        }
-        String password = System.getenv("HMS_DOCUMENT_TEST_PASSWORD");
-        String effectivePassword = (password != null) ? password : "";
-        registry.add("spring.datasource.url", () -> "jdbc:postgresql://localhost:5433/" + database);
-        registry.add("spring.datasource.driver-class-name", () -> "org.postgresql.Driver");
-        registry.add("spring.datasource.username", () -> "postgres");
-        registry.add("spring.datasource.password", () -> effectivePassword);
-        registry.add("spring.jpa.hibernate.ddl-auto", () -> "validate");
+        PostgresTestTarget.registerProperties(registry);
     }
 
     @BeforeEach
     void setUp() throws IOException {
-        String currentDb = jdbc.queryForObject("SELECT current_database()", String.class);
-        assertThat(currentDb).matches("hms_reconcile_validation_[0-9]{8}_[0-9]{6}_[0-9a-f]{8}");
-        assertThat(currentDb).isNotEqualToIgnoringCase("hospital_management");
-
-        Long oid = jdbc.queryForObject("SELECT oid FROM pg_database WHERE datname = current_database()", Long.class);
-        assertThat(oid).isNotNull().isGreaterThan(0L);
-
         assertThat(AopUtils.isAopProxy(service)).isTrue();
         protectedRoot = StorageTestConfig.testStorageRoot;
 
@@ -180,10 +162,10 @@ class DoctorVerificationDocumentServicePostgresTest {
 
         Specialization spec = new Specialization();
         spec.setName("Doc Svc Spec " + suffix);
-        spec = specializations.save(spec);
+        this.spec = specializations.save(spec);
 
-        doctor1 = createDoctor(doctorUser1, spec, "Alpha");
-        doctor2 = createDoctor(doctorUser2, spec, "Beta");
+        doctor1 = createDoctor(doctorUser1, this.spec, "Alpha");
+        doctor2 = createDoctor(doctorUser2, this.spec, "Beta");
     }
 
     @AfterEach
@@ -199,6 +181,9 @@ class DoctorVerificationDocumentServicePostgresTest {
             jdbc.update("DELETE FROM users WHERE id IN (?, ?, ?, ?)",
                     doctorUser1.getId(), doctorUser2.getId(), adminUser.getId(),
                     patientUser != null ? patientUser.getId() : -1L);
+        }
+        if (spec != null) {
+            jdbc.update("DELETE FROM specializations WHERE id = ?", spec.getId());
         }
     }
 
@@ -282,9 +267,11 @@ class DoctorVerificationDocumentServicePostgresTest {
     }
 
     @Test
-    void test03_multipleHistoricalRetiredVersions() {
+    void test03_multipleHistoricalRetiredVersions() throws Exception {
         var v1 = service.attachDocument(doctor1.getId(), VerificationDocumentKind.ID_PROOF, pngImage, auth(doctorUser1), "c-1");
+        Thread.sleep(25);
         var v2 = service.attachDocument(doctor1.getId(), VerificationDocumentKind.ID_PROOF, jpegImage, auth(doctorUser1), "c-2");
+        Thread.sleep(25);
         var v3 = service.attachDocument(doctor1.getId(), VerificationDocumentKind.ID_PROOF, pngImage, auth(doctorUser1), "c-3");
 
         var history = service.getDocumentHistory(doctor1.getId(), VerificationDocumentKind.ID_PROOF);

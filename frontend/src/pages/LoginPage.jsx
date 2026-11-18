@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Link, Navigate, useNavigate, useSearchParams } from 'react-router-dom';
-import api from '../api/axios';
+import api, { resolveOAuthLoginUrl } from '../api/axios';
 import { mutationErrorMessage, requireJsonResponse } from '../api/responseValidation';
 import { useAuth } from '../context/useAuth';
 import './LoginPage.css';
@@ -82,6 +82,13 @@ export default function LoginPage() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
+  const registeredParam = searchParams.get('registered');
+  const registeredSuccess =
+    registeredParam === 'patient'
+      ? 'Registration successful! Please sign in with your email and password.'
+      : registeredParam === 'doctor'
+      ? 'Doctor registration submitted successfully! Please sign in to access your dashboard and verification portal.'
+      : '';
   const [errorMessage, setErrorMessage] = useState(() => {
     return searchParams.get('error')
       ? 'Google sign-in could not be completed. If you use a password for this account, sign in with your password.'
@@ -198,6 +205,12 @@ export default function LoginPage() {
           <p>Access your Hospital Management account</p>
         </div>
 
+        {registeredSuccess && (
+          <div className="login-success" role="status">
+            {registeredSuccess}
+          </div>
+        )}
+
         {(errorMessage || sessionExpired) && (
           <div className="login-error" role="alert">
             {errorMessage || 'Your session expired. Sign in again to continue.'}
@@ -259,7 +272,7 @@ export default function LoginPage() {
           <span>or</span>
         </div>
 
-        <a href="/oauth2/authorization/google" className="google-login-btn">
+        <a href={resolveOAuthLoginUrl()} className="google-login-btn">
           <svg
             className="google-icon"
             viewBox="0 0 24 24"
@@ -285,6 +298,19 @@ export default function LoginPage() {
           </svg>
           <span>Sign in with Google</span>
         </a>
+
+        <div className="login-register-prompt">
+          <p>Don&apos;t have an account?</p>
+          <div className="login-register-actions">
+            <Link to="/register/patient" className="register-btn-link">
+              Register as Patient
+            </Link>
+            <span className="register-sep">•</span>
+            <Link to="/register/doctor" className="register-btn-link">
+              Apply as Doctor
+            </Link>
+          </div>
+        </div>
 
         <div className="login-footer">
           <Link to="/" className="back-home-link">

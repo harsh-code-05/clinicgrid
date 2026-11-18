@@ -48,11 +48,7 @@ public class AdminDoctorVerificationController {
             return null;
         }
         try {
-            VerificationStatus parsed = VerificationStatus.valueOf(status.trim().toUpperCase(Locale.ROOT));
-            if (parsed == VerificationStatus.UNVERIFIED) {
-                throw new BadRequestException("Status filter must be one of: SUBMITTED, UNDER_REVIEW, VERIFIED, REJECTED");
-            }
-            return parsed;
+            return VerificationStatus.valueOf(status.trim().toUpperCase(Locale.ROOT));
         } catch (IllegalArgumentException exception) {
             throw new BadRequestException("Invalid verification status filter: " + status);
         }

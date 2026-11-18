@@ -8,6 +8,8 @@ import org.springframework.security.core.userdetails.UserDetailsService;
 import org.springframework.security.core.userdetails.UsernameNotFoundException;
 import org.springframework.stereotype.Service;
 
+import java.util.Locale;
+
 @Service
 public class CustomUserDetailsService implements UserDetailsService {
 
@@ -21,8 +23,16 @@ public class CustomUserDetailsService implements UserDetailsService {
     public UserDetails loadUserByUsername(String email)
             throws UsernameNotFoundException {
 
-        User user = userRepository.findByEmail(email)
-                .filter(candidate -> candidate.getGoogleId() == null && candidate.getPassword() != null)
+        if (email == null || email.isBlank()) {
+            throw new UsernameNotFoundException("Invalid email or password");
+        }
+
+        String trimmed = email.trim();
+        String normalizedEmail = trimmed.toLowerCase(Locale.ROOT);
+
+        User user = userRepository.findByEmail(trimmed)
+                .or(() -> userRepository.findByEmailIgnoreCase(normalizedEmail))
+                .filter(candidate -> candidate.getPassword() != null && !candidate.getPassword().isBlank())
                 .orElseThrow(() ->
                         new UsernameNotFoundException("Invalid email or password"));
 

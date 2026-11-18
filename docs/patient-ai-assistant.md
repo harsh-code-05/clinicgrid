@@ -86,7 +86,25 @@ Remove-Item Env:SPRING_DATASOURCE_PASSWORD -ErrorAction SilentlyContinue
 
 ## Verification commands
 
-Backend tests use embedded H2. The FAQ has no network client to mock and no paid API usage. The existing project has no PostgreSQL integration-test suite. On this Windows environment, use the cached startup Mockito agent to avoid the previously observed dynamic-attachment failure without source or pom changes.
+Backend tests include both embedded H2 unit/slice suites and a dedicated PostgreSQL integration suite ([PatientAssistantPostgresTest.java](../src/test/java/com/harsh/hospitalmanagement/ai/PatientAssistantPostgresTest.java)). The FAQ has no network client to mock and no paid API usage.
+
+### PostgreSQL integration test suite
+The PostgreSQL suite verifies real database persistence, message ordering, pessimistic row locking (`SELECT ... FOR UPDATE NOWAIT`), idempotent retry deduplication, database unique constraints (`uk_ai_chat_message_request_role`), post-write transaction rollback, and foreign-key cascade deletion.
+
+Safety prerequisites:
+- Must target an explicitly verified disposable database (`hms_dev_*` or `hms_reconcile_validation_*`) via `HMS_DOCUMENT_TEST_DATABASE`.
+- Strictly forbids and rejects the production database `hospital_management` (enforces OID != 16560 and pins disposable identity).
+- Password must be provided via the `HMS_DOCUMENT_TEST_PASSWORD` environment variable (required; empty password or silent fallback is not permitted).
+
+```powershell
+Set-Location 'C:\Users\Harsh\OneDrive\Desktop\Downloads\hospital-management-system\hospital-management-system'
+$env:HMS_DOCUMENT_TEST_DATABASE = 'hms_dev_20261114_233452_7cbf1856'
+$env:HMS_DOCUMENT_TEST_PASSWORD = 'YourDisposableDbPassword'
+mvn test -Dtest=PatientAssistantPostgresTest
+```
+
+### Unit and full regression suite
+On this Windows environment, use the cached startup Mockito agent to avoid the previously observed dynamic-attachment failure without source or pom changes.
 
 ```powershell
 Set-Location 'C:\Users\Harsh\OneDrive\Desktop\Downloads\hospital-management-system\hospital-management-system'

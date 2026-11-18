@@ -1,5 +1,7 @@
 package com.harsh.hospitalmanagement.repository;
 
+import com.harsh.hospitalmanagement.config.safety.PostgresTestTarget;
+import com.harsh.hospitalmanagement.config.safety.RequiresDisposablePostgres;
 import com.harsh.hospitalmanagement.entity.Doctor;
 import com.harsh.hospitalmanagement.entity.DoctorVerificationDocument;
 import com.harsh.hospitalmanagement.entity.DoctorVerificationDocumentEvent;
@@ -13,12 +15,12 @@ import com.harsh.hospitalmanagement.enums.VerificationDocumentKind;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest;
 import org.springframework.boot.jdbc.test.autoconfigure.AutoConfigureTestDatabase;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.context.annotation.Import;
 import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
@@ -34,9 +36,10 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-@EnabledIfEnvironmentVariable(named = "HMS_DOCUMENT_TEST_DATABASE", matches = ".+")
+@RequiresDisposablePostgres
 @DataJpaTest(properties = "spring.sql.init.mode=never", showSql = false)
 @AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
+@Import(PostgresTestTarget.TestDataSourceConfiguration.class)
 @DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)
 @Transactional(propagation = Propagation.NOT_SUPPORTED)
 class DoctorVerificationCatalogPostgresTest {
@@ -57,38 +60,15 @@ class DoctorVerificationCatalogPostgresTest {
     private User doctorUser1;
     private User doctorUser2;
     private User adminUser;
+    private Specialization spec;
 
     @DynamicPropertySource
     static void configureDisposablePostgres(DynamicPropertyRegistry registry) {
-        String database = System.getenv("HMS_DOCUMENT_TEST_DATABASE");
-        if (database == null || !database.matches("hms_reconcile_validation_[0-9]{8}_[0-9]{6}_[0-9a-f]{8}")) {
-            throw new IllegalArgumentException("A disposable reconciliation database name is required");
-        }
-        if ("hospital_management".equalsIgnoreCase(database)) {
-            throw new IllegalStateException("Refusing to run tests against production hospital_management database");
-        }
-        String password = System.getenv("HMS_DOCUMENT_TEST_PASSWORD");
-        if (password == null) {
-            password = ""; // Use pgpass if password env is empty
-        }
-        registry.add("spring.datasource.url", () -> "jdbc:postgresql://localhost:5433/" + database);
-        registry.add("spring.datasource.driver-class-name", () -> "org.postgresql.Driver");
-        registry.add("spring.datasource.username", () -> "postgres");
-        String effectivePassword = password;
-        registry.add("spring.datasource.password", () -> effectivePassword);
-        registry.add("spring.jpa.hibernate.ddl-auto", () -> "validate");
+        PostgresTestTarget.registerProperties(registry);
     }
 
     @BeforeEach
     void setUp() {
-        // Assert we are connected to the disposable validation target and NOT hospital_management
-        String currentDb = jdbc.queryForObject("SELECT current_database()", String.class);
-        assertThat(currentDb).matches("hms_reconcile_validation_[0-9]{8}_[0-9]{6}_[0-9a-f]{8}");
-        assertThat(currentDb).isNotEqualToIgnoringCase("hospital_management");
-
-        Long oid = jdbc.queryForObject("SELECT oid FROM pg_database WHERE datname = current_database()", Long.class);
-        assertThat(oid).isNotNull().isGreaterThan(0L);
-
         String suffix = UUID.randomUUID().toString();
         doctorUser1 = createUser("doc1-" + suffix + "@example.invalid", Role.DOCTOR);
         doctorUser2 = createUser("doc2-" + suffix + "@example.invalid", Role.DOCTOR);
@@ -96,10 +76,10 @@ class DoctorVerificationCatalogPostgresTest {
 
         Specialization spec = new Specialization();
         spec.setName("Doc Catalog Spec " + suffix);
-        spec = specializations.save(spec);
+        this.spec = specializations.save(spec);
 
-        doctor1 = createDoctor(doctorUser1, spec, "One");
-        doctor2 = createDoctor(doctorUser2, spec, "Two");
+        doctor1 = createDoctor(doctorUser1, this.spec, "One");
+        doctor2 = createDoctor(doctorUser2, this.spec, "Two");
     }
 
     @AfterEach
@@ -114,6 +94,9 @@ class DoctorVerificationCatalogPostgresTest {
         if (doctorUser1 != null && doctorUser2 != null && adminUser != null) {
             jdbc.update("DELETE FROM users WHERE id IN (?, ?, ?)",
                     doctorUser1.getId(), doctorUser2.getId(), adminUser.getId());
+        }
+        if (spec != null) {
+            jdbc.update("DELETE FROM specializations WHERE id = ?", spec.getId());
         }
     }
 

@@ -5,6 +5,7 @@ import { mutationErrorMessage, requireAppointmentResult, requireAppointmentsList
 import { useAuth } from '../context/useAuth';
 import AvailabilityManager from '../components/AvailabilityManager';
 import AdminVerificationPanel from '../components/AdminVerificationPanel';
+import AdminBillingPanel from '../components/AdminBillingPanel';
 import AppointmentListState from '../components/AppointmentListState';
 import AppointmentMetricsState from '../components/AppointmentMetricsState';
 import { RequestSequencer, executeSequencedRequest } from '../utils/requestSequencer';
@@ -344,6 +345,13 @@ export default function AdminDashboard() {
         >
           Doctor Verification
         </button>
+        <button
+          type="button"
+          className={`tab-btn ${activeTab === 'billing' ? 'active' : ''}`}
+          onClick={() => setActiveTab('billing')}
+        >
+          Billing &amp; Invoicing
+        </button>
       </nav>
 
       <main className="dashboard-content">
@@ -624,6 +632,9 @@ export default function AdminDashboard() {
 
         {/* Tab 3: Doctor Professional Verification */}
         {activeTab === 'verification' && <AdminVerificationPanel />}
+
+        {/* Tab 4: Hospital Billing & Invoicing */}
+        {activeTab === 'billing' && <AdminBillingPanel />}
       </main>
 
       {/* Complete Appointment Confirmation Modal */}

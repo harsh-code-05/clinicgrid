@@ -320,7 +320,8 @@ class DoctorVerificationControllerTest {
                 .andExpect(jsonPath("$.items[*].status", hasItem("UNDER_REVIEW")))
                 .andExpect(jsonPath("$.items[*].status", hasItem("REJECTED")))
                 .andExpect(jsonPath("$.items[*].status", hasItem("VERIFIED")))
-                .andExpect(jsonPath("$.items[?(@.doctorId == " + owner.getId() + ")]", hasSize(0)))
+                .andExpect(jsonPath("$.items[*].status", hasItem("UNVERIFIED")))
+                .andExpect(jsonPath("$.items[?(@.doctorId == " + owner.getId() + ")].status", hasItem("UNVERIFIED")))
                 .andReturn().getResponse().getContentAsString();
 
         // Private document paths, keys, emails, and internal evidence metadata must never appear in queue results.
@@ -350,7 +351,9 @@ class DoctorVerificationControllerTest {
                 .andExpect(jsonPath("$.items[?(@.status != 'VERIFIED')]", hasSize(0)));
 
         mvc.perform(get(ADMIN_QUEUE).param("status", "UNVERIFIED").session(adminSession))
-                .andExpect(status().isBadRequest());
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.items[?(@.doctorId == " + owner.getId() + ")].status", hasItem("UNVERIFIED")))
+                .andExpect(jsonPath("$.items[?(@.status != 'UNVERIFIED')]", hasSize(0)));
         mvc.perform(get(ADMIN_QUEUE).param("status", "BOGUS").session(adminSession))
                 .andExpect(status().isBadRequest());
 

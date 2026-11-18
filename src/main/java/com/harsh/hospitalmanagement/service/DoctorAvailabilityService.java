@@ -65,6 +65,9 @@ public class DoctorAvailabilityService {
         Doctor doctor = lockDoctor(request.getDoctorId());
 
         if (!admin) {
+            if (doctor.getVerificationStatus() != com.harsh.hospitalmanagement.enums.VerificationStatus.VERIFIED) {
+                throw new ForbiddenException("Doctor profile is pending verification. Availability cannot be managed until approved.");
+            }
             long doctorUserId = doctor.getUser().getId();
 
             if (doctorUserId != actor.id()) {
@@ -146,6 +149,9 @@ public class DoctorAvailabilityService {
         }
 
         if (!admin) {
+            if (doctor.getVerificationStatus() != com.harsh.hospitalmanagement.enums.VerificationStatus.VERIFIED) {
+                throw new ForbiddenException("Doctor profile is pending verification. Availability cannot be managed until approved.");
+            }
             long doctorUserId = doctor.getUser().getId();
 
             if (doctorUserId != actor.id()) {

@@ -114,7 +114,7 @@ test('refresh reloads owned history, sends text and restores ready state', async
   view.change('New question');
   await view.submit();
   assert.equal(view.sent.length, 1);
-  assert.deepEqual(Object.keys(view.sent[0].request).sort(), ['content', 'requestId']);
+  assert.deepEqual(Object.keys(view.sent[0].request).sort(), ['content', 'includeAppointments', 'requestId']);
   assert.match(text(view.render()), /New reply/);
   assert.equal(view.input().props.value, '');
   await view.unmount();
@@ -142,13 +142,15 @@ test('failed send preserves draft and request ID and duplicate clicks are suppre
   await view.unmount();
 });
 
-test('FAQ interface explains its scope and has no appointment-sharing control', async () => {
+test('AI Assistant interface explains its medical scope, disclaimer, and opt-in appointment control', async () => {
   const view = await setup();
   await view.settle();
-  assert.match(text(view.render()), /predefined HMS FAQ/);
-  assert.match(text(view.render()), /without looking up your appointments/);
-  assert.doesNotMatch(text(view.render()), /Hugging Face|token|model|Share up to/);
-  assert.equal(nodes(view.render()).some((node) => node.type === 'input' && node.props.type === 'checkbox'), false);
+  assert.match(text(view.render()), /Medical Disclaimer/);
+  assert.match(text(view.render()), /General health education/);
+  assert.doesNotMatch(text(view.render()), /Hugging Face|apiToken|secret/);
+  const checkboxes = nodes(view.render()).filter((node) => node.type === 'input' && node.props.type === 'checkbox');
+  assert.equal(checkboxes.length, 1);
+  assert.equal(checkboxes[0].props.checked, false);
   await view.unmount();
 });
 

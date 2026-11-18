@@ -127,6 +127,6 @@ class PatientAssistantControllerTest {
                         .content("{\"requestId\":\"00000000-0000-0000-0000-000000000001\",\"content\":\"How do I book?\",\"includeAppointments\":true,\"patientId\":999}"))
                 .andExpect(status().isOk());
         verify(service).send(eq(account("patient@test.invalid")), eq(1L),
-                eq(new AssistantDtos.SendMessage(UUID.fromString("00000000-0000-0000-0000-000000000001"), "How do I book?")));
+                eq(new AssistantDtos.SendMessage(UUID.fromString("00000000-0000-0000-0000-000000000001"), "How do I book?", true)));
     }
 }

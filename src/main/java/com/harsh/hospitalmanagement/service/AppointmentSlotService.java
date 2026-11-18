@@ -86,6 +86,13 @@ public class AppointmentSlotService {
 
     @Transactional(readOnly = true)
     public List<AppointmentSlot> getAvailableSlots(Long doctorId, LocalDate date) {
+        if (doctorId == null) {
+            return List.of();
+        }
+        var doctor = doctorRepository.findById(doctorId).orElse(null);
+        if (doctor == null || doctor.getVerificationStatus() != com.harsh.hospitalmanagement.enums.VerificationStatus.VERIFIED) {
+            return List.of();
+        }
         List<AppointmentSlot> candidates = date != null
                 ? appointmentSlotRepository.findBookableByDoctorAndDate(doctorId, date)
                 : appointmentSlotRepository.findBookableByDoctor(doctorId);
@@ -97,6 +104,13 @@ public class AppointmentSlotService {
 
     @Transactional(readOnly = true)
     public List<AppointmentSlot> getDiscoverableOffers(Long doctorId, LocalDate date) {
+        if (doctorId == null) {
+            return List.of();
+        }
+        var doctor = doctorRepository.findById(doctorId).orElse(null);
+        if (doctor == null || doctor.getVerificationStatus() != com.harsh.hospitalmanagement.enums.VerificationStatus.VERIFIED) {
+            return List.of();
+        }
         Instant now = Instant.now(clock);
         return appointmentSlotRepository.findDiscoverableOffers(doctorId, date).stream()
                 .filter(slot -> now.isBefore(slotStartInstant(slot)))
@@ -164,6 +178,10 @@ public class AppointmentSlotService {
                                         "Doctor availability not found"));
         if (availability.getDoctor().getId() != doctorId) {
             throw new ConflictException("Availability changed while acquiring the schedule lock. Retry the request.");
+        }
+
+        if (availability.getDoctor().getVerificationStatus() != com.harsh.hospitalmanagement.enums.VerificationStatus.VERIFIED) {
+            throw new ForbiddenException("Doctor profile is pending verification. Slots cannot be generated until approved.");
         }
 
         if (!admin) {

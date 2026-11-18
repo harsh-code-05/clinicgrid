@@ -1,9 +1,34 @@
 
 import axios from 'axios';
 
-export function createApiClient(adapter) {
+export function resolveApiBaseUrl(rawUrl = (typeof import.meta !== 'undefined' ? import.meta.env?.VITE_API_BASE_URL : undefined)) {
+  if (typeof rawUrl !== 'string') {
+    return '/api';
+  }
+  const trimmed = rawUrl.trim();
+  if (!trimmed) {
+    return '/api';
+  }
+  const stripped = trimmed.replace(/\/+$/, '');
+  return stripped || '/api';
+}
+
+export function resolveOAuthLoginUrl(rawBaseUrl = (typeof import.meta !== 'undefined' ? import.meta.env?.VITE_API_BASE_URL : undefined)) {
+  const resolved = resolveApiBaseUrl(rawBaseUrl);
+  if (/^https?:\/\//i.test(resolved)) {
+    try {
+      const url = new URL(resolved);
+      return `${url.origin}/oauth2/authorization/google`;
+    } catch {
+      // fallback
+    }
+  }
+  return '/oauth2/authorization/google';
+}
+
+export function createApiClient(adapter, baseURL = resolveApiBaseUrl()) {
   const client = axios.create({
-    baseURL: '/api',
+    baseURL,
     allowAbsoluteUrls: false,
     withCredentials: true,
     headers: { 'Content-Type': 'application/json' },

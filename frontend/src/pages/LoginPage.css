@@ -47,6 +47,17 @@
   margin-bottom: 20px;
 }
 
+.login-success {
+  background: var(--accent-bg);
+  border: 1px solid var(--accent-border);
+  color: var(--accent);
+  padding: 12px 14px;
+  border-radius: 8px;
+  font-size: 14px;
+  line-height: 1.4;
+  margin-bottom: 20px;
+}
+
 @media (prefers-color-scheme: dark) {
   .login-error {
     background: rgba(239, 68, 68, 0.15);
@@ -195,6 +206,44 @@
   width: 18px;
   height: 18px;
   flex-shrink: 0;
+}
+
+.login-register-prompt {
+  text-align: center;
+  margin-top: 24px;
+  padding-top: 20px;
+  border-top: 1px solid var(--border);
+}
+
+.login-register-prompt p {
+  color: var(--text);
+  font-size: 14px;
+  margin: 0 0 10px;
+}
+
+.login-register-actions {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+}
+
+.register-btn-link {
+  color: var(--accent);
+  font-size: 14px;
+  font-weight: 600;
+  text-decoration: none;
+  transition: opacity 0.2s;
+}
+
+.register-btn-link:hover {
+  opacity: 0.85;
+  text-decoration: underline;
+}
+
+.register-sep {
+  color: var(--text);
+  font-size: 13px;
 }
 
 .login-footer {

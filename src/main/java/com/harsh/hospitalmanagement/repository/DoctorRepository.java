@@ -21,14 +21,16 @@ public interface DoctorRepository extends JpaRepository<Doctor, Long> {
     @Query(
             value = """
                     SELECT d FROM Doctor d
-                    JOIN FETCH d.specialization
+                    LEFT JOIN FETCH d.specialization
+                    LEFT JOIN FETCH d.user
                     WHERE d.verificationStatus IN :statuses
                     ORDER BY CASE d.verificationStatus
                         WHEN com.harsh.hospitalmanagement.enums.VerificationStatus.SUBMITTED THEN 0
                         WHEN com.harsh.hospitalmanagement.enums.VerificationStatus.UNDER_REVIEW THEN 1
-                        WHEN com.harsh.hospitalmanagement.enums.VerificationStatus.REJECTED THEN 2
-                        WHEN com.harsh.hospitalmanagement.enums.VerificationStatus.VERIFIED THEN 3
-                        ELSE 4
+                        WHEN com.harsh.hospitalmanagement.enums.VerificationStatus.UNVERIFIED THEN 2
+                        WHEN com.harsh.hospitalmanagement.enums.VerificationStatus.REJECTED THEN 3
+                        WHEN com.harsh.hospitalmanagement.enums.VerificationStatus.VERIFIED THEN 4
+                        ELSE 5
                     END ASC,
                     COALESCE((SELECT MAX(h.id) FROM DoctorVerificationHistory h WHERE h.doctor.id = d.id), 0L) DESC,
                     d.id DESC
@@ -38,6 +40,8 @@ public interface DoctorRepository extends JpaRepository<Doctor, Long> {
     Page<Doctor> findVerificationQueue(@Param("statuses") Collection<VerificationStatus> statuses, Pageable pageable);
 
     Optional<Doctor> findByUser_Email(String email);
+
+    Optional<Doctor> findByUser_Id(Long userId);
 
     boolean existsByUser_Id(Long userId);
 }

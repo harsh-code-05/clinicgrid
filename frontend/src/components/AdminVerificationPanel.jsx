@@ -20,6 +20,7 @@ import './VerificationPanels.css';
 
 const QUEUE_FILTERS = [
   { key: 'ALL', label: 'All Submissions' },
+  { key: 'UNVERIFIED', label: 'Unverified' },
   { key: 'SUBMITTED', label: 'Submitted' },
   { key: 'UNDER_REVIEW', label: 'Under Review' },
   { key: 'REJECTED', label: 'Rejected' },
@@ -543,14 +544,17 @@ export default function AdminVerificationPanel() {
                     </div>
 
                     <div className="verification-subtitle">
-                      {item.specialization || 'General'} • Reg:{' '}
-                      {item.registrationNumber || 'Pending'} ({item.medicalCouncil || 'Pending Council'})
+                      {item.specialization || 'General'}
+                      {item.qualification ? ` • ${item.qualification}` : ''}
+                      {item.experience != null ? ` • ${item.experience} yrs exp` : ''}
+                      {' • '}Reg: {item.registrationNumber || 'Pending'} ({item.medicalCouncil || 'Pending Council'})
                     </div>
 
                     <div className="verification-header-row">
                       <span className="verification-subtitle">
                         Submitted: {formatVerificationTimestamp(item.submittedAt)}
                         {item.latestActorRole ? ` • Last update by ${item.latestActorRole}` : ''}
+                        {item.documentStatus ? ` • Docs: ${item.documentStatus}` : ''}
                       </span>
                       <button
                         type="button"
@@ -645,7 +649,47 @@ export default function AdminVerificationPanel() {
 
               {detailData && (
                 <>
+                  {(detailData.storageAvailable === false || detailData.documentStatus === 'STORAGE_UNAVAILABLE') && (
+                    <div className="dashboard-alert alert-warning" role="alert">
+                      <div>
+                        <strong>Document storage unavailable — verification pending.</strong> Private document storage is temporarily unavailable on this server (503). Verification documents cannot be stored or retrieved until storage is configured.
+                      </div>
+                    </div>
+                  )}
+
+                  {detailStatus === 'UNVERIFIED' && (
+                    <div className="dashboard-alert alert-info" role="status">
+                      <div>
+                        <strong>Doctor Registration Status: UNVERIFIED.</strong> This doctor has completed initial account registration. Verification credentials and documents are pending upload.
+                      </div>
+                    </div>
+                  )}
+
                   <div className="verification-profile-grid">
+                    <div className="verification-field-meta">
+                      <span className="verification-field-label">Email</span>
+                      <span className="verification-field-value">
+                        {detailData.email || selectedSummary?.email || 'Not provided'}
+                      </span>
+                    </div>
+                    <div className="verification-field-meta">
+                      <span className="verification-field-label">Qualification</span>
+                      <span className="verification-field-value">
+                        {detailData.qualification || selectedSummary?.qualification || 'Not provided'}
+                      </span>
+                    </div>
+                    <div className="verification-field-meta">
+                      <span className="verification-field-label">Experience</span>
+                      <span className="verification-field-value">
+                        {detailData.experience != null ? `${detailData.experience} year(s)` : (selectedSummary?.experience != null ? `${selectedSummary.experience} year(s)` : 'Not specified')}
+                      </span>
+                    </div>
+                    <div className="verification-field-meta">
+                      <span className="verification-field-label">Document Status</span>
+                      <span className="verification-field-value">
+                        {detailData.documentStatus || (detailDocuments.length > 0 ? 'SUBMITTED' : 'MISSING')}
+                      </span>
+                    </div>
                     <div className="verification-field-meta">
                       <span className="verification-field-label">Registration #</span>
                       <span className="verification-field-value">
@@ -670,7 +714,7 @@ export default function AdminVerificationPanel() {
                         className="verification-field-value verification-mono"
                         title={detailData.reviewVersion}
                       >
-                        {detailData.reviewVersion.slice(0, 14)}...
+                        {detailData.reviewVersion ? `${detailData.reviewVersion.slice(0, 14)}...` : 'None'}
                       </span>
                     </div>
                   </div>
@@ -811,7 +855,8 @@ export default function AdminVerificationPanel() {
                           type="button"
                           className="btn-confirm-complete"
                           onClick={handleApprove}
-                          disabled={Boolean(decisionBusy)}
+                          disabled={Boolean(decisionBusy) || detailDocuments.length < 2 || detailData?.storageAvailable === false}
+                          title={detailDocuments.length < 2 ? 'Cannot approve doctor without verified documents' : detailData?.storageAvailable === false ? 'Document storage unavailable' : ''}
                         >
                           {decisionBusy === 'approve' ? 'Approving...' : 'Approve Verification'}
                         </button>

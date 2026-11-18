@@ -12,6 +12,7 @@ import com.harsh.hospitalmanagement.enums.AppointmentSlotOutcome;
 import com.harsh.hospitalmanagement.enums.AppointmentStatus;
 import com.harsh.hospitalmanagement.enums.Role;
 import com.harsh.hospitalmanagement.enums.SlotStatus;
+import com.harsh.hospitalmanagement.enums.VerificationStatus;
 import com.harsh.hospitalmanagement.exception.BadRequestException;
 import com.harsh.hospitalmanagement.exception.ConflictException;
 import com.harsh.hospitalmanagement.repository.AppointmentRepository;
@@ -187,6 +188,7 @@ class AppointmentCancellationReconciliationTest {
             Doctor doctor = new Doctor();
             doctor.setUser(createUser(Role.DOCTOR));
             doctor.setSpecialization(specialization);
+            doctor.setVerificationStatus(VerificationStatus.VERIFIED);
             entityManager.persist(doctor);
             return doctor;
         });

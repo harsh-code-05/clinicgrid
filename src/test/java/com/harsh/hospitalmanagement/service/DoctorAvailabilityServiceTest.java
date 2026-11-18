@@ -73,6 +73,7 @@ class DoctorAvailabilityServiceTest {
         Doctor doctor = new Doctor();
         doctor.setId(id);
         doctor.setUser(user);
+        doctor.setVerificationStatus(com.harsh.hospitalmanagement.enums.VerificationStatus.VERIFIED);
         return doctor;
     }
 

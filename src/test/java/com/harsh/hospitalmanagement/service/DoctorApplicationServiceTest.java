@@ -8,6 +8,7 @@ import com.harsh.hospitalmanagement.entity.Specialization;
 import com.harsh.hospitalmanagement.entity.User;
 import com.harsh.hospitalmanagement.enums.ApplicationStatus;
 import com.harsh.hospitalmanagement.enums.Role;
+import com.harsh.hospitalmanagement.enums.VerificationStatus;
 import com.harsh.hospitalmanagement.exception.BadRequestException;
 import com.harsh.hospitalmanagement.exception.ResourceNotFoundException;
 import com.harsh.hospitalmanagement.repository.DoctorApplicationRepository;
@@ -276,11 +277,60 @@ class DoctorApplicationServiceTest {
         assertThat(savedDoctor.getUser()).isEqualTo(applicant);
         assertThat(savedDoctor.getFirstName()).isEqualTo("Alice");
         assertThat(savedDoctor.getQualification()).isEqualTo("MBBS");
+        assertThat(savedDoctor.getVerificationStatus()).isEqualTo(VerificationStatus.UNVERIFIED);
 
         // Application status
         assertThat(result.getStatus()).isEqualTo(ApplicationStatus.APPROVED);
         assertThat(result.getReviewedAt()).isNotNull();
         assertThat(result.getReviewedBy()).isEqualTo(admin);
+    }
+
+    @Test
+    void approveApplication_shouldPreserveExistingVerifiedStatus_whenDoctorAlreadyVerified() {
+
+        User applicant = new User();
+        applicant.setId(5L);
+        applicant.setEmail("applicant@example.com");
+        applicant.setRole(Role.DOCTOR);
+
+        User admin = new User();
+        admin.setId(1L);
+        admin.setEmail("admin@example.com");
+        admin.setRole(Role.ADMIN);
+
+        Specialization specialization = new Specialization();
+        specialization.setId(1L);
+
+        DoctorApplication application = new DoctorApplication();
+        application.setId(10L);
+        application.setUser(applicant);
+        application.setSpecialization(specialization);
+        application.setFirstName("Alice");
+        application.setLastName("Smith");
+        application.setQualification("MBBS");
+        application.setExperience(5);
+        application.setStatus(ApplicationStatus.PENDING);
+        application.setCreatedAt(LocalDateTime.now().minusDays(1));
+
+        Doctor existingDoctor = new Doctor();
+        existingDoctor.setId(50L);
+        existingDoctor.setUser(applicant);
+        existingDoctor.setVerificationStatus(VerificationStatus.VERIFIED);
+
+        when(doctorApplicationRepository.findByIdForUpdate(10L)).thenReturn(Optional.of(application));
+        when(userRepository.findById(account("admin@example.com").id())).thenReturn(Optional.of(admin));
+        when(doctorRepository.findByUser_Id(5L)).thenReturn(Optional.of(existingDoctor));
+        when(userRepository.save(any(User.class))).thenAnswer(inv -> inv.getArgument(0));
+        when(doctorRepository.save(any(Doctor.class))).thenAnswer(inv -> inv.getArgument(0));
+        when(doctorApplicationRepository.save(any(DoctorApplication.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        DoctorApplication result = service.approveApplication(10L, account("admin@example.com").id());
+
+        ArgumentCaptor<Doctor> doctorCaptor = ArgumentCaptor.forClass(Doctor.class);
+        verify(doctorRepository).save(doctorCaptor.capture());
+        Doctor savedDoctor = doctorCaptor.getValue();
+        assertThat(savedDoctor.getVerificationStatus()).isEqualTo(VerificationStatus.VERIFIED);
+        assertThat(result.getStatus()).isEqualTo(ApplicationStatus.APPROVED);
     }
 
     @Test

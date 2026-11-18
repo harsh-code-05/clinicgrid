@@ -72,14 +72,17 @@ class CustomUserDetailsServiceTest {
         verify(userRepository).findByEmail("unknown@gmail.com");
     }
     @Test
-    void legacyGoogleLinkDisablesPasswordAuthenticationEvenWithStoredHash() {
+    void linkedGoogleAccountWithPasswordAllowsPasswordAuthentication() {
         User user = new User();
+        user.setId(2L);
+        user.setEmail("linked@test.invalid");
         user.setGoogleId("legacy-google-subject");
         user.setPassword("legacy-hash");
+        user.setRole(Role.PATIENT);
         when(userRepository.findByEmail("linked@test.invalid")).thenReturn(Optional.of(user));
 
-        assertThatThrownBy(() -> userDetailsService.loadUserByUsername("linked@test.invalid"))
-                .isInstanceOf(UsernameNotFoundException.class)
-                .hasMessage("Invalid email or password");
+        UserDetails userDetails = userDetailsService.loadUserByUsername("linked@test.invalid");
+        assertThat(userDetails.getUsername()).isEqualTo("2");
+        assertThat(userDetails.getPassword()).isEqualTo("legacy-hash");
     }
 }

@@ -9,6 +9,7 @@ import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletRequestWrapper;
 import jakarta.servlet.http.HttpServletResponse;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -23,6 +24,7 @@ import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.security.oauth2.client.registration.ClientRegistrationRepository;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.access.AccessDeniedHandlerImpl;
 import org.springframework.security.web.authentication.AnonymousAuthenticationFilter;
@@ -41,14 +43,20 @@ import org.springframework.security.web.csrf.HttpSessionCsrfTokenRepository;
 import org.springframework.security.web.csrf.XorCsrfTokenRequestAttributeHandler;
 import org.springframework.security.web.savedrequest.HttpSessionRequestCache;
 import org.springframework.security.web.servlet.util.matcher.PathPatternRequestMatcher;
+import org.springframework.web.cors.CorsConfiguration;
+import org.springframework.web.cors.CorsConfigurationSource;
+import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
 import org.springframework.web.filter.OncePerRequestFilter;
 
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Enumeration;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.function.Supplier;
 
 @Configuration
@@ -100,14 +108,66 @@ public class SecurityConfig {
     }
 
     @Bean
+    public CorsConfigurationSource corsConfigurationSource(
+            @Value("${app.frontend.url:http://localhost:5173/}") String frontendUrl,
+            @Value("${app.cors.allowed-origins:}") String additionalOrigins,
+            @Value("${app.cors.allow-localhost:true}") boolean allowLocalhost) {
+
+        CorsConfiguration configuration = new CorsConfiguration();
+        Set<String> origins = new LinkedHashSet<>();
+
+        String normalizedFrontend = frontendUrl != null ? frontendUrl.replaceAll("/+$", "").trim() : "";
+        if (!normalizedFrontend.isEmpty()) {
+            origins.add(normalizedFrontend);
+        }
+        if (allowLocalhost) {
+            origins.add("http://localhost:5173");
+            origins.add("http://127.0.0.1:5173");
+        }
+
+        if (additionalOrigins != null && !additionalOrigins.isBlank()) {
+            for (String origin : additionalOrigins.split(",")) {
+                String trimmed = origin.replaceAll("/+$", "").trim();
+                if (!trimmed.isEmpty() && !"*".equals(trimmed)) {
+                    origins.add(trimmed);
+                }
+            }
+        }
+
+        configuration.setAllowedOrigins(new ArrayList<>(origins));
+        configuration.setAllowedMethods(List.of("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"));
+        configuration.setAllowedHeaders(List.of(
+                "Authorization",
+                "Content-Type",
+                "X-CSRF-TOKEN",
+                "Accept",
+                "Origin",
+                "X-Requested-With"
+        ));
+        configuration.setExposedHeaders(List.of(
+                "X-CSRF-TOKEN",
+                "Content-Disposition"
+        ));
+        configuration.setAllowCredentials(true);
+        configuration.setMaxAge(3600L);
+
+        UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
+        source.registerCorsConfiguration("/**", configuration);
+        return source;
+    }
+
+    @Bean
     public SecurityFilterChain securityFilterChain(
             HttpSecurity http,
             SecurityContextRepository securityContextRepository,
             CsrfTokenRepository csrfTokens,
             CustomOidcUserService customOidcUserService,
+            CorsConfigurationSource corsConfigurationSource,
+            ObjectProvider<ClientRegistrationRepository> clientRegistrationRepositoryProvider,
             @Value("${app.frontend.url:http://localhost:5173/}") String frontendUrl)
             throws Exception {
 
+        ClientRegistrationRepository clientRegistrationRepository = clientRegistrationRepositoryProvider.getIfAvailable();
         String targetUrl = frontendUrl.endsWith("/") ? frontendUrl : frontendUrl + "/";
         var apiRequests = PathPatternRequestMatcher.withDefaults().matcher("/api/**");
         var browserLogin = new LoginUrlAuthenticationEntryPoint(targetUrl + "login");
@@ -117,6 +177,7 @@ public class SecurityConfig {
                 HttpMethod.GET.matches(request.getMethod()) && !apiRequests.matches(request));
 
         http
+                .cors(cors -> cors.configurationSource(corsConfigurationSource))
                 .requestCache(cache -> cache.requestCache(browserRequestCache))
                 .exceptionHandling(errors -> errors.authenticationEntryPoint((request, response, failure) -> {
                     if (apiRequests.matches(request)) {
@@ -139,6 +200,7 @@ public class SecurityConfig {
                     }
                 }))
                 .csrf(csrf -> csrf
+                        .ignoringRequestMatchers("/ws/**")
                         .csrfTokenRepository(csrfTokens)
                         .csrfTokenRequestHandler(headerOnlyMultipartCsrfHandler()))
                 .logout(logout -> logout
@@ -167,19 +229,22 @@ public class SecurityConfig {
                 .securityContext(securityContext ->
                         securityContext
                                 .securityContextRepository(
-                                        securityContextRepository))
+                                        securityContextRepository));
 
-                .oauth2Login(oauth2 ->
-                        oauth2
-                                .loginPage(targetUrl + "login")
-                                .userInfoEndpoint(userInfo ->
-                                        userInfo
-                                                .oidcUserService(
-                                                        customOidcUserService))
-                                .defaultSuccessUrl(targetUrl, true)
-                                .failureUrl(targetUrl + "login?error=google"))
+        if (clientRegistrationRepository != null) {
+            http.oauth2Login(oauth2 ->
+                    oauth2
+                            .clientRegistrationRepository(clientRegistrationRepository)
+                            .loginPage(targetUrl + "login")
+                            .userInfoEndpoint(userInfo ->
+                                    userInfo
+                                            .oidcUserService(
+                                                    customOidcUserService))
+                            .defaultSuccessUrl(targetUrl, true)
+                            .failureUrl(targetUrl + "login?error=google"));
+        }
 
-                .authorizeHttpRequests(auth -> auth
+        http.authorizeHttpRequests(auth -> auth
 
                         .requestMatchers(
                                 "/oauth2/**",
@@ -187,17 +252,26 @@ public class SecurityConfig {
                         ).permitAll()
                         .requestMatchers(
                                 HttpMethod.POST,
-                                "/api/users"
+                                "/api/users",
+                                "/api/patients/register",
+                                "/api/doctors/register"
                         ).permitAll()
 
                         .requestMatchers(
                                 HttpMethod.POST,
-                                "/api/auth/login"
+                                "/api/auth/login",
+                                "/api/auth/register",
+                                "/api/auth/register/**"
                         ).permitAll()
 
                         .requestMatchers(
                                 HttpMethod.GET,
                                 "/api/auth/me", "/api/auth/csrf"
+                        ).permitAll()
+
+                        .requestMatchers(
+                                HttpMethod.GET,
+                                "/api/health"
                         ).permitAll()
 
                         .requestMatchers("/logout", "/api/auth/logout").denyAll()
@@ -353,9 +427,13 @@ public class SecurityConfig {
                                 "/api/appointments/**", "/api/v2/appointments"
                         ).hasRole("PATIENT")
 
+                        .requestMatchers(HttpMethod.GET, "/api/appointments/*/video-room")
+                        .hasAnyRole("DOCTOR", "PATIENT")
 
+                        .requestMatchers("/ws/**").authenticated()
 
                         .requestMatchers("/api/patient/assistant/**").hasRole("PATIENT")
+                        .requestMatchers("/api/patient/bills/**").hasRole("PATIENT")
 
                         .requestMatchers("/api/**").authenticated()
 

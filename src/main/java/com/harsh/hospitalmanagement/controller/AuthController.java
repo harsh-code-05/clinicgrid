@@ -1,14 +1,21 @@
 package com.harsh.hospitalmanagement.controller;
 
 import com.harsh.hospitalmanagement.dto.AuthMeResponse;
+import com.harsh.hospitalmanagement.dto.DoctorRegisterRequest;
 import com.harsh.hospitalmanagement.dto.LoginRequest;
 import com.harsh.hospitalmanagement.dto.LoginResponse;
+import com.harsh.hospitalmanagement.dto.PatientRegisterRequest;
+import com.harsh.hospitalmanagement.entity.Doctor;
+import com.harsh.hospitalmanagement.entity.Patient;
 import com.harsh.hospitalmanagement.security.AuthenticationAudit;
 import com.harsh.hospitalmanagement.security.LocalAccount;
 import com.harsh.hospitalmanagement.security.LoginRateLimiter;
+import com.harsh.hospitalmanagement.service.DoctorService;
+import com.harsh.hospitalmanagement.service.PatientService;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import jakarta.validation.Valid;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.CacheControl;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
@@ -36,16 +43,30 @@ public class AuthController {
     private final AuthenticationAudit audit;
     private final LoginRateLimiter rateLimiter;
     private final SessionAuthenticationStrategy passwordSessionStrategy;
+    private final PatientService patientService;
+    private final DoctorService doctorService;
 
     public AuthController(AuthenticationManager authenticationManager,
                           SecurityContextRepository securityContextRepository,
                           AuthenticationAudit audit, LoginRateLimiter rateLimiter,
                           SessionAuthenticationStrategy passwordSessionStrategy) {
+        this(authenticationManager, securityContextRepository, audit, rateLimiter, passwordSessionStrategy, null, null);
+    }
+
+    @Autowired
+    public AuthController(AuthenticationManager authenticationManager,
+                          SecurityContextRepository securityContextRepository,
+                          AuthenticationAudit audit, LoginRateLimiter rateLimiter,
+                          SessionAuthenticationStrategy passwordSessionStrategy,
+                          @Autowired(required = false) PatientService patientService,
+                          @Autowired(required = false) DoctorService doctorService) {
         this.authenticationManager = authenticationManager;
         this.securityContextRepository = securityContextRepository;
         this.audit = audit;
         this.rateLimiter = rateLimiter;
         this.passwordSessionStrategy = passwordSessionStrategy;
+        this.patientService = patientService;
+        this.doctorService = doctorService;
     }
 
     @PostMapping("/login")
@@ -62,7 +83,7 @@ public class AuthController {
         Authentication authentication;
         try {
             authentication = authenticationManager.authenticate(
-                    UsernamePasswordAuthenticationToken.unauthenticated(request.getEmail(), request.getPassword()));
+                    UsernamePasswordAuthenticationToken.unauthenticated(request.getEmail().trim(), request.getPassword()));
         } catch (AuthenticationException ex) {
             audit.rejectedPassword(request.getEmail(), clientIp);
             throw ex;
@@ -84,6 +105,37 @@ public class AuthController {
         SecurityContextHolder.setContext(context);
 
         return ResponseEntity.ok(new LoginResponse("Login successful", account.email(), role.substring(5)));
+    }
+
+    @PostMapping("/register/patient")
+    public ResponseEntity<?> registerPatient(@Valid @RequestBody PatientRegisterRequest request) {
+        if (patientService == null) {
+            return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                    .body(Map.of("message", "Registration service unavailable"));
+        }
+        Patient patient = patientService.registerPatient(request);
+        return ResponseEntity.status(HttpStatus.CREATED).body(Map.of(
+                "message", "Patient registered successfully",
+                "email", patient.getUser().getEmail(),
+                "role", "PATIENT",
+                "patientId", patient.getId()
+        ));
+    }
+
+    @PostMapping("/register/doctor")
+    public ResponseEntity<?> registerDoctor(@Valid @RequestBody DoctorRegisterRequest request) {
+        if (doctorService == null) {
+            return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                    .body(Map.of("message", "Registration service unavailable"));
+        }
+        Doctor doctor = doctorService.registerDoctor(request);
+        return ResponseEntity.status(HttpStatus.CREATED).body(Map.of(
+                "message", "Doctor registered successfully. Account is pending verification.",
+                "email", doctor.getUser().getEmail(),
+                "role", "DOCTOR",
+                "doctorId", doctor.getId(),
+                "verificationStatus", doctor.getVerificationStatus().name()
+        ));
     }
 
     @GetMapping("/me")

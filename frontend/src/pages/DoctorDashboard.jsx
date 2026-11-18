@@ -7,6 +7,7 @@ import AvailabilityManager from '../components/AvailabilityManager';
 import DoctorVerificationPanel from '../components/DoctorVerificationPanel';
 import AppointmentListState from '../components/AppointmentListState';
 import AppointmentMetricsState from '../components/AppointmentMetricsState';
+import { VideoRoomModal } from '../components/VideoRoomModal';
 import { RequestSequencer, executeSequencedRequest } from '../utils/requestSequencer';
 import { MAX_CANCELLATION_REASON_LENGTH, buildCancelRequestPayload, validateCancellationReason, formatCancellationNotice, formatCancelledByRole, formatSlotOutcomeLabel, formatCancelledAt, shouldRefreshAfterCancelError } from '../utils/appointmentCancellation';
 import './DoctorDashboard.css';
@@ -72,6 +73,7 @@ export default function DoctorDashboard() {
   // Cancel appointment modal state
   const [cancellingAppt, setCancellingAppt] = useState(null);
   const [cancelReason, setCancelReason] = useState('');
+  const [activeVideoApptId, setActiveVideoApptId] = useState(null);
   const [isCancelling, setIsCancelling] = useState(false);
   const [cancelError, setCancelError] = useState('');
   const [cancelRefreshWarning, setCancelRefreshWarning] = useState('');
@@ -427,6 +429,17 @@ export default function DoctorDashboard() {
           </div>
         ) : doctorProfile ? (
           <>
+            {doctorProfile.verificationStatus === 'UNVERIFIED' && (
+              <div className="dashboard-alert alert-warning" role="alert" style={{ marginBottom: '20px' }}>
+                <div>
+                  <strong>Account Status: Pending Verification</strong>
+                  <p style={{ marginTop: '4px', fontSize: '13px' }}>
+                    Your doctor account has been registered and is pending administrative review. You can submit your credentials under the <strong>Verification</strong> tab. Availability scheduling and slot publishing will be activated once verified by an administrator.
+                  </p>
+                </div>
+              </div>
+            )}
+
             {/* Tab 1: My Appointments */}
             {activeTab === 'appointments' && (
               <>
@@ -566,6 +579,12 @@ export default function DoctorDashboard() {
                               </div>
                             )}
 
+                            {doctorProfile?.verificationStatus !== 'VERIFIED' && (
+                              <div className="video-locked-notice">
+                                ⚠️ Verification pending — Video consultation room locked
+                              </div>
+                            )}
+
                             {/* Footer Meta */}
                             <div className="card-footer-meta">
                               Appointment #{appt.id} • Booked on{' '}
@@ -576,6 +595,15 @@ export default function DoctorDashboard() {
                           {/* Action Buttons for Confirmed Appointments */}
                           {appt.status === 'CONFIRMED' && (
                             <div className="card-actions">
+                              {doctorProfile?.verificationStatus === 'VERIFIED' && (
+                                <button
+                                  type="button"
+                                  className="btn-join-video"
+                                  onClick={() => setActiveVideoApptId(appt.id)}
+                                >
+                                  📹 Join Video Call
+                                </button>
+                              )}
                               <button
                                 type="button"
                                 className="btn-complete-appt"
@@ -766,6 +794,13 @@ export default function DoctorDashboard() {
             </div>
           </div>
         </div>
+      )}
+
+      {activeVideoApptId && (
+        <VideoRoomModal
+          appointmentId={activeVideoApptId}
+          onClose={() => setActiveVideoApptId(null)}
+        />
       )}
     </div>
   );

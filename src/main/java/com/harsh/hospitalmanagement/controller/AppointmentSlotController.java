@@ -44,6 +44,20 @@ public class AppointmentSlotController {
         return ResponseEntity.ok(responses);
     }
 
+    @GetMapping("/offers")
+    public ResponseEntity<List<AppointmentSlotResponse>> getOffers(
+            @RequestParam Long doctorId,
+            @RequestParam(required = false) LocalDate date) {
+
+        List<AppointmentSlot> slots = appointmentSlotService.getAvailableSlots(doctorId, date);
+
+        List<AppointmentSlotResponse> responses = slots.stream()
+                .map(this::toResponse)
+                .toList();
+
+        return ResponseEntity.ok(responses);
+    }
+
     @GetMapping("/{id}")
     public ResponseEntity<AppointmentSlotResponse> getSlotById(
             @PathVariable Long id) {

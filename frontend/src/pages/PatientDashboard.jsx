@@ -7,6 +7,8 @@ import { MAX_CANCELLATION_REASON_LENGTH, buildCancelRequestPayload, validateCanc
 import { useAuth } from '../context/useAuth';
 import usePatientSlots from '../hooks/usePatientSlots';
 import PatientAIAssistant from '../components/PatientAIAssistant';
+import PatientBillsPanel from '../components/PatientBillsPanel';
+import { VideoRoomModal } from '../components/VideoRoomModal';
 import './PatientDashboard.css';
 
 function formatDate(dateStr) {
@@ -47,12 +49,8 @@ function getTodayIso() {
 export default function PatientDashboard() {
   const { user, logout, formDrafts } = useAuth();
   const navigate = useNavigate();
-  const [searchParams] = typeof useSearchParams === 'function'
-    ? useSearchParams()
-    : [typeof URLSearchParams !== 'undefined' ? new URLSearchParams() : { get: () => null }];
-  const location = typeof useLocation === 'function'
-    ? useLocation()
-    : { search: '', state: null };
+  const [searchParams] = useSearchParams();
+  const location = useLocation();
 
   const urlDoctorId = searchParams?.get('doctorId') || location?.state?.selectedDoctorId;
   const urlSpecialtyId = searchParams?.get('specialtyId') || location?.state?.selectedSpecialtyId;
@@ -109,6 +107,7 @@ export default function PatientDashboard() {
   const [isCancelling, setIsCancelling] = useState(false);
   const [cancelError, setCancelError] = useState('');
   const [cancelRefreshWarning, setCancelRefreshWarning] = useState('');
+  const [activeVideoApptId, setActiveVideoApptId] = useState(null);
 
   const cancelInProgressRef = useRef(false);
   const mountedRef = useRef(true);
@@ -152,16 +151,30 @@ export default function PatientDashboard() {
   const [bookingSuccess, setBookingSuccess] = useState('');
 
   useEffect(() => {
-    if (urlDoctorId) {
-      setActiveTab('book');
-      if (urlSpecialtyId) {
-        setSelectedSpecialtyId(String(urlSpecialtyId));
+    if (urlDoctorId && doctors.length > 0) {
+      const matched = doctors.find((d) => String(d.id) === String(urlDoctorId));
+      if (matched && matched.verificationStatus != null && matched.verificationStatus !== 'VERIFIED') {
+        queueMicrotask(() => {
+          setBookingError('Selected doctor is not verified for patient appointments. Please choose a verified doctor.');
+          if (selectedDoctorId) {
+            selectDoctor('');
+          }
+        });
+        return;
       }
+    }
+    if (urlDoctorId) {
+      queueMicrotask(() => {
+        setActiveTab((prev) => (prev === 'book' ? prev : 'book'));
+        if (urlSpecialtyId) {
+          setSelectedSpecialtyId(String(urlSpecialtyId));
+        }
+      });
       if (String(selectedDoctorId) !== String(urlDoctorId)) {
         selectDoctor(String(urlDoctorId));
       }
     }
-  }, [urlDoctorId, urlSpecialtyId, selectedDoctorId, selectDoctor]);
+  }, [urlDoctorId, urlSpecialtyId, selectedDoctorId, selectDoctor, doctors]);
 
   // 1. Fetch Patient Profile
   const fetchProfile = useCallback(async () => {
@@ -448,6 +461,14 @@ export default function PatientDashboard() {
       return;
     }
 
+    const targetDoctor = (typeof doctors !== 'undefined' && Array.isArray(doctors))
+      ? doctors.find((d) => String(d.id) === String(selectedDoctorId))
+      : null;
+    if (targetDoctor && targetDoctor.verificationStatus != null && targetDoctor.verificationStatus !== 'VERIFIED') {
+      setBookingError('Doctor is not verified for patient appointments.');
+      return;
+    }
+
     if (!isDate(selectedDate) || selectedDate < getTodayIso()) {
       setBookingError('Please select a valid appointment date.');
       return;
@@ -516,11 +537,13 @@ export default function PatientDashboard() {
     return appt.status === statusFilter;
   });
 
-  // Filtered Doctors by Specialization
+  // Filtered Doctors by Specialization (strictly VERIFIED doctors only)
+  const isDoctorVerified = (doc) => doc && (doc.verificationStatus == null || doc.verificationStatus === 'VERIFIED');
+  const verifiedDoctors = doctors.filter(isDoctorVerified);
   const filteredDoctors =
     selectedSpecialtyId === 'all'
-      ? doctors
-      : doctors.filter(
+      ? verifiedDoctors
+      : verifiedDoctors.filter(
           (doc) => String(doc.specialization?.id) === String(selectedSpecialtyId),
         );
 
@@ -590,11 +613,22 @@ export default function PatientDashboard() {
         >
           AI Assistant
         </button>
+        <button
+          type="button"
+          className={`tab-btn ${activeTab === 'bills' ? 'active' : ''}`}
+          onClick={() => {
+            setActiveTab('bills');
+            setGlobalNotice('');
+          }}
+        >
+          My Bills
+        </button>
       </nav>
 
       {/* Main Content Area */}
       <main className="dashboard-content">
         {activeTab === 'assistant' && <PatientAIAssistant />}
+        {activeTab === 'bills' && <PatientBillsPanel />}
         {/* Profile Uninitialized Alert */}
         {profileNotFound && (
           <div
@@ -736,6 +770,7 @@ export default function PatientDashboard() {
                           : 'status-noshow';
 
                   const canCancel = appt.status === 'CONFIRMED';
+                  const isDocVerified = appt.doctor?.verificationStatus === 'VERIFIED';
 
                   return (
                     <article key={appt.id} className="appointment-card">
@@ -767,6 +802,12 @@ export default function PatientDashboard() {
                         {appt.reason && (
                           <div className="card-reason">
                             <strong>Reason:</strong> {appt.reason}
+                          </div>
+                        )}
+
+                        {!isDocVerified && (
+                          <div className="video-locked-notice">
+                            ⚠️ Doctor verification pending — Video consultation room locked
                           </div>
                         )}
 
@@ -808,8 +849,17 @@ export default function PatientDashboard() {
                         </div>
                       </div>
 
-                      {canCancel && (
-                        <div className="card-actions">
+                      <div className="card-actions">
+                        {isDocVerified && appt.status === 'CONFIRMED' && (
+                          <button
+                            type="button"
+                            className="btn-join-video"
+                            onClick={() => setActiveVideoApptId(appt.id)}
+                          >
+                            📹 Join Video Call
+                          </button>
+                        )}
+                        {canCancel && (
                           <button
                             type="button"
                             className="btn-cancel-appt"
@@ -817,8 +867,8 @@ export default function PatientDashboard() {
                           >
                             Cancel Appointment
                           </button>
-                        </div>
-                      )}
+                        )}
+                      </div>
                     </article>
                   );
                 })}
@@ -1349,6 +1399,13 @@ export default function PatientDashboard() {
             </div>
           </div>
         </div>
+      )}
+
+      {activeVideoApptId && (
+        <VideoRoomModal
+          appointmentId={activeVideoApptId}
+          onClose={() => setActiveVideoApptId(null)}
+        />
       )}
     </div>
   );

@@ -21,6 +21,7 @@ public interface AppointmentSlotRepository
             s.status = com.harsh.hospitalmanagement.enums.SlotStatus.AVAILABLE
             AND s.retired = false AND s.availabilityRevision = a.revision
             AND s.doctor.id = a.doctor.id AND s.date = a.date
+            AND s.doctor.verificationStatus = com.harsh.hospitalmanagement.enums.VerificationStatus.VERIFIED
             AND s.startTime >= a.startTime AND s.endTime <= a.endTime
             AND s.startTime < s.endTime
             """;

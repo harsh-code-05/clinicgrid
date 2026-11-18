@@ -57,6 +57,13 @@ final class WindowsDpapiMasterKeyProvider implements MasterKeyProvider {
             throw new IOException("Invalid document master-key version");
         }
         byte[] blob = files.read(Path.of("v" + version + ".dpapi"), 16 * 1024);
+        if (blob.length < 44) {
+            throw new IOException("Invalid DPAPI blob header");
+        }
+        int flags = (blob[40] & 0xFF) | ((blob[41] & 0xFF) << 8) | ((blob[42] & 0xFF) << 16) | ((blob[43] & 0xFF) << 24);
+        if ((flags & WinCrypt.CRYPTPROTECT_LOCAL_MACHINE) != 0) {
+            throw new IOException("DPAPI master key must be protected in CurrentUser scope, not LocalMachine");
+        }
         byte[] secret;
         try {
             secret = Crypt32Util.cryptUnprotectData(blob, purpose(version), WinCrypt.CRYPTPROTECT_UI_FORBIDDEN, null);
