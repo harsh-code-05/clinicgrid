@@ -1,30 +1,100 @@
 package com.harsh.hospitalmanagement.config.safety;
 
 import org.junit.jupiter.api.Test;
+import org.springframework.jdbc.core.ConnectionCallback;
+import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.io.ByteArrayInputStream;
 import java.nio.charset.StandardCharsets;
+import java.sql.Connection;
+import java.sql.ResultSet;
+import java.sql.Statement;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.inOrder;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verifyNoMoreInteractions;
+import static org.mockito.Mockito.when;
 
 class ReleaseAttestationContractTest {
     private static final Path SOURCE = Path.of("src/main/java/com/harsh/hospitalmanagement/config/safety/ReleaseAttestationGate.java");
 
     @Test
-    void usesCanonicalClasspathDigestAndOneConnection() throws Exception {
-        String source = Files.readString(SOURCE);
-        assertThat(source).contains("database/migration-catalog-digest.sql");
-        assertThat(source).contains("pg_temp.hms_catalog_digest()");
-        assertThat(source).contains("jdbc.execute((org.springframework.jdbc.core.ConnectionCallback<String>) connection ->");
-        assertThat(source).doesNotContain("hms_migration.hms_catalog_digest()");
+    void usesUnmodifiedCanonicalQueryBodyWithoutTheFunctionWrapper() throws Exception {
+        String sql = Files.readString(Path.of("database/migration-catalog-digest.sql"));
+        String query = ReleaseAttestationGate.extractCatalogDigestQuery(sql);
+        int bodyStart = sql.indexOf("    WITH namespaces AS");
+        int bodyEnd = sql.lastIndexOf("\n$digest$;");
+        assertThat(query).isEqualTo(sql.substring(bodyStart, bodyEnd).stripTrailing())
+                .contains("ORDER BY nspname, relname, kind, name", "sha256(convert_to(")
+                .doesNotContain("CREATE FUNCTION", "pg_temp.hms_catalog_digest()");
+        assertThatThrownBy(() -> ReleaseAttestationGate.extractCatalogDigestQuery(
+                sql.replace("SET search_path TO pg_catalog", "SET search_path TO public")))
+                .isInstanceOf(IllegalStateException.class).hasMessageContaining("wrapper");
     }
 
     @Test
-    void privilegeContractCoversEffectiveRolesAndTemporaryFunctions() throws Exception {
+    void executesOnlyTheDigestQueryInOneReadOnlyTransactionAndRestoresTheConnection() throws Exception {
+        String query = "WITH fixture AS (SELECT 1) SELECT 'fixture' FROM fixture";
+        String expected = "a".repeat(64);
+        Connection connection = mock(Connection.class);
+        Statement statement = mock(Statement.class);
+        ResultSet result = mock(ResultSet.class);
+        JdbcTemplate jdbc = mock(JdbcTemplate.class);
+        when(jdbc.execute(org.mockito.ArgumentMatchers.<ConnectionCallback<String>>any()))
+                .thenAnswer(call -> call.<ConnectionCallback<String>>getArgument(0).doInConnection(connection));
+        when(connection.getAutoCommit()).thenReturn(true);
+        when(connection.createStatement()).thenReturn(statement);
+        when(statement.executeQuery(query)).thenReturn(result);
+        when(result.next()).thenReturn(true, false);
+        when(result.getString(1)).thenReturn(expected);
+
+        assertThat(ReleaseAttestationGate.calculateCatalogDigest(jdbc, query)).isEqualTo(expected);
+
+        var calls = inOrder(connection, statement, result);
+        calls.verify(connection).getAutoCommit();
+        calls.verify(connection).setAutoCommit(false);
+        calls.verify(connection).createStatement();
+        calls.verify(statement).execute("SET TRANSACTION READ ONLY");
+        calls.verify(statement).execute("SET LOCAL search_path TO pg_catalog");
+        calls.verify(statement).executeQuery(query);
+        calls.verify(result).next();
+        calls.verify(result).getString(1);
+        calls.verify(result).next();
+        calls.verify(result).close();
+        calls.verify(statement).close();
+        calls.verify(connection).rollback();
+        calls.verify(connection).setAutoCommit(true);
+        verifyNoMoreInteractions(connection, statement, result);
+    }
+
+    @Test
+    void failsClosedAndRollsBackWhenDigestQueryDoesNotReturnAResult() throws Exception {
+        Connection connection = mock(Connection.class);
+        Statement statement = mock(Statement.class);
+        ResultSet result = mock(ResultSet.class);
+        JdbcTemplate jdbc = mock(JdbcTemplate.class);
+        when(jdbc.execute(org.mockito.ArgumentMatchers.<ConnectionCallback<String>>any()))
+                .thenAnswer(call -> call.<ConnectionCallback<String>>getArgument(0).doInConnection(connection));
+        when(connection.getAutoCommit()).thenReturn(true);
+        when(connection.createStatement()).thenReturn(statement);
+        when(statement.executeQuery("SELECT fixture")).thenReturn(result);
+
+        assertThatThrownBy(() -> ReleaseAttestationGate.calculateCatalogDigest(jdbc, "SELECT fixture"))
+                .isInstanceOf(IllegalStateException.class).hasMessageContaining("not returned");
+
+        var calls = inOrder(connection);
+        calls.verify(connection).rollback();
+        calls.verify(connection).setAutoCommit(true);
+    }
+
+    @Test
+    void privilegeContractStillCoversEffectiveRolesAndDdlRestrictions() throws Exception {
         String source = Files.readString(SOURCE);
         assertThat(source).contains("pg_has_role(current_user, r.oid, 'USAGE')");
         assertThat(source).contains("pg_has_role(current_user, r.oid, 'SET')");

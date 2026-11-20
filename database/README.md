@@ -44,13 +44,22 @@ deployment path. Hikari attestation currently occurs when a PostgreSQL test pool
 created, avoiding per-query overhead; a newly created physical connection should be
 re-attested if the test environment uses a long-lived pool.
 
-When the `prod` Spring profile is active, `ReleaseAttestationGate` runs during
-application-context refresh, before the embedded web server is started. It verifies
-the current database identity, optional independently supplied OID, a single
-`DEPLOYMENT` release target, all nine ordered migration IDs and checksums, and the
-final catalog digest record. It never runs migrations. Missing or partial metadata
-fails context refresh, so the application cannot accept HTTP traffic. Local and H2
-test profiles do not require this deployment attestation.
+HMS deployment mode (`HMS_DEPLOYMENT_MODE=deployment`) requires the `prod` Spring
+profile, eager bean initialization, and an independently verified database OID.
+Set `HMS_RELEASE_ATTESTATION_EXPECTED_DATABASE_OID` to the positive OID of the
+target database. The production profile also recognizes `HMS_EXPECTED_DATABASE_OID`
+as a legacy fallback when the primary setting is absent.
+
+`ReleaseAttestationGate` runs during application-context refresh under `prod`
+and blocks startup if the resolved expected OID is missing, invalid, or differs
+from the connected database's OID. The gate also verifies database identity, a
+single `DEPLOYMENT` release target, all nine ordered migration IDs and checksums,
+and the final catalog digest. Missing, partial, or mismatched attestation
+prevents the application from serving HTTP traffic. Attestation runs no migrations.
+
+Ordinary local development and H2 tests outside the `prod` profile do not use
+this deployment attestation or require the deployment OID setting. Opt-in local
+PostgreSQL tests still require the separate disposable-database checks above.
 
 The application currently uses Hibernate schema updates. This migration is manual because the project has no migration runner. Rehearse the migration and the scheduling tests on a disposable PostgreSQL database before deployment.
 
@@ -93,4 +102,6 @@ Use `spring.jpa.hibernate.ddl-auto=validate` after approved migrations. See [loc
 
 # Release attestation digest and runtime role
 
-Production startup attestation creates `pg_temp.hms_catalog_digest()` from the canonical `database/migration-catalog-digest.sql` resource and invokes it on the same JDBC connection. This is session-scoped and does not install persistent DDL. The runtime role therefore needs `TEMP` on the target database, while it must not own application schemas/objects or have DDL privileges. The gate rejects elevated direct or inherited/`SET ROLE` memberships, database/schema/object ownership, schema `CREATE`, database `CREATE`, and missing `TEMP`. Verify these privileges with the deployment role setup; the application never grants them automatically.
+Production startup attestation verifies the packaged `database/migration-catalog-digest.sql` checksum and runs the SQL function's unchanged query body directly. It pins one backend for that query in a read-only transaction and applies the original `pg_catalog` search path only within the transaction. Startup creates no function and leaves no session-scoped setting. The migration runners still use the original temporary helper and write the same catalog digest to the ledger.
+
+The runtime role admission policy remains unchanged: it requires database `TEMP` and disallows privileged memberships, database/schema/object ownership, schema `CREATE`, and database `CREATE`. The application never grants privileges automatically.
