@@ -362,6 +362,76 @@ class MultipartStagingManagerTest {
     }
 
     @Test
+    @EnabledOnOs(OS.WINDOWS)
+    void scheduledCleanupCleansAbandonedStagingFiles(@TempDir Path tempDir) throws IOException {
+        isolateTempRoot(tempDir);
+        Path stagingDir = tempDir.resolve("scheduled-staging");
+        MultipartStagingManager manager = new MultipartStagingManager(stagingDir);
+        manager.validateStagingDirectory();
+
+        Path abandonedFile = stagingDir.resolve("upload_abandoned.tmp");
+        Files.writeString(abandonedFile, "abandoned chunk");
+        Files.setLastModifiedTime(abandonedFile, FileTime.from(Instant.now().minus(Duration.ofHours(2))));
+
+        int cleaned = manager.scheduledCleanup();
+        assertThat(cleaned).isEqualTo(1);
+        assertThat(Files.exists(abandonedFile)).isFalse();
+    }
+
+    @Test
+    @EnabledOnOs(OS.WINDOWS)
+    void validateWindowsStagingSecurityRejectsStandingAceForOtherPrincipals() {
+        String processSid = "S-1-5-21-12345-67890-11111-1001";
+        var snap = new MultipartStagingManager.WindowsSecuritySnapshot(
+                processSid, false, true,
+                List.of(
+                        new MultipartStagingManager.WindowsAce(true, 0, WinNT.FILE_ALL_ACCESS, processSid),
+                        new MultipartStagingManager.WindowsAce(true, 0, WinNT.FILE_ALL_ACCESS, "S-1-5-32-544")
+                )
+        );
+
+        assertThatThrownBy(() -> MultipartStagingManager.validateWindowsStagingSecurity(snap, Set.of(processSid)))
+                .isInstanceOf(DocumentStorageUnavailableException.class)
+                .hasMessageContaining("Insecure multipart staging permissions");
+    }
+
+    @Test
+    @EnabledOnOs(OS.WINDOWS)
+    void rejectsStagingRootWithSystemStandingAclEntry() {
+        String processSid = "S-1-5-21-12345-67890-11111-1001";
+        var snap = new MultipartStagingManager.WindowsSecuritySnapshot(
+                processSid, false, true,
+                List.of(
+                        new MultipartStagingManager.WindowsAce(true, 0, WinNT.FILE_ALL_ACCESS, processSid),
+                        new MultipartStagingManager.WindowsAce(true, 0, WinNT.FILE_ALL_ACCESS, "S-1-5-18")
+                )
+        );
+
+        assertThatThrownBy(() -> MultipartStagingManager.validateWindowsStagingSecurity(snap, Set.of(processSid)))
+                .isInstanceOf(DocumentStorageUnavailableException.class)
+                .hasMessageContaining("Insecure multipart staging permissions");
+    }
+
+    @Test
+    void validateAndPinStagingDirectoryTriggersOpportunisticSweep(@TempDir Path tempDir) throws Exception {
+        isolateTempRoot(tempDir);
+        Path stagingDir = tempDir.resolve("opportunistic-staging");
+        MultipartStagingManager.createRestrictedDirectory(stagingDir);
+
+        Path staleUpload = stagingDir.resolve("upload_abandoned.tmp");
+        Files.writeString(staleUpload, "abandoned-staging-data");
+        Files.setLastModifiedTime(staleUpload, FileTime.from(Instant.now().minus(Duration.ofHours(3))));
+
+        MultipartStagingManager manager = new MultipartStagingManager(stagingDir);
+
+        try (var pin = manager.validateAndPinStagingDirectory()) {
+            assertThat(pin).isNotNull();
+        }
+
+        assertThat(Files.exists(staleUpload)).isFalse();
+    }
+
+    @Test
     void readCurrentUidFollowsProcSelfTargetAndHandlesNonDumpableFallback() throws IOException {
         Path procSelf = Path.of("/proc/self");
 

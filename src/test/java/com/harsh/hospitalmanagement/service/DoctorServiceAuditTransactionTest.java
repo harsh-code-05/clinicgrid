@@ -1,5 +1,6 @@
 package com.harsh.hospitalmanagement.service;
 
+import com.harsh.hospitalmanagement.config.safety.PostgresTestTarget;
 import com.harsh.hospitalmanagement.dto.DoctorRequest;
 import com.harsh.hospitalmanagement.dto.DoctorUpdateRequest;
 import com.harsh.hospitalmanagement.entity.Doctor;
@@ -39,7 +40,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
         "spring.sql.init.mode=never"
 }, showSql = false)
 @AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
-@Import({DoctorService.class, AuditLogService.class})
+@Import({PostgresTestTarget.TestDataSourceConfiguration.class, DoctorService.class, AuditLogService.class})
 @DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)
 // Let the service proxy own the transaction so assertions see committed database state.
 @Transactional(propagation = Propagation.NOT_SUPPORTED)
@@ -59,22 +60,7 @@ class DoctorServiceAuditTransactionTest {
     // Opt in to a prepared disposable PostgreSQL database. Otherwise Maven uses H2.
     @DynamicPropertySource
     static void disposablePostgres(DynamicPropertyRegistry registry) {
-        String database = System.getenv("HMS_DOCTOR_TEST_DATABASE");
-        if (database == null) {
-            return;
-        }
-        if (!database.matches("hms_reconcile_validation_[0-9]{8}_[0-9]{6}_[0-9a-f]{8}")) {
-            throw new IllegalArgumentException("A disposable reconciliation database name is required");
-        }
-        String password = System.getenv("HMS_DOCTOR_TEST_PASSWORD");
-        if (password == null || password.isBlank()) {
-            throw new IllegalArgumentException("HMS_DOCTOR_TEST_PASSWORD is required for PostgreSQL");
-        }
-        registry.add("spring.datasource.url", () -> "jdbc:postgresql://localhost:5433/" + database);
-        registry.add("spring.datasource.driver-class-name", () -> "org.postgresql.Driver");
-        registry.add("spring.datasource.username", () -> "postgres");
-        registry.add("spring.datasource.password", () -> password);
-        registry.add("spring.jpa.hibernate.ddl-auto", () -> "validate");
+        PostgresTestTarget.registerProperties(registry);
     }
 
     @BeforeEach

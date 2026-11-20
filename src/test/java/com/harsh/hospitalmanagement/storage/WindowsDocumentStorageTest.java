@@ -45,7 +45,7 @@ import static org.mockito.Mockito.mockStatic;
 import static org.mockito.Mockito.when;
 
 @EnabledOnOs(OS.WINDOWS)
-class WindowsDocumentStorageTest {
+public class WindowsDocumentStorageTest {
 
     @TempDir Path temp;
 
@@ -426,6 +426,97 @@ class WindowsDocumentStorageTest {
         }
     }
 
+    @Test
+    void rejectsStorageRootWithUntrustedStandingAclEntry() throws Exception {
+        Path untrustedRoot = Files.createDirectory(temp.resolve("untrusted-acl"));
+        var token = new WinNT.HANDLEByReference();
+        assertThat(Advapi32.INSTANCE.OpenProcessToken(Kernel32.INSTANCE.GetCurrentProcess(), WinNT.TOKEN_QUERY, token)).isTrue();
+        try {
+            var sid = new WinNT.PSID(Advapi32Util.getTokenAccount(token.getValue()).sid);
+            var adminSid = new WinNT.PSIDByReference();
+            assertThat(Advapi32.INSTANCE.ConvertStringSidToSid("S-1-5-32-544", adminSid)).isTrue();
+
+            var acl = new WinNT.ACL(1024);
+            assertThat(Advapi32.INSTANCE.InitializeAcl(acl, 1024, WinNT.ACL_REVISION)).isTrue();
+            assertThat(Advapi32.INSTANCE.AddAccessAllowedAceEx(acl, WinNT.ACL_REVISION,
+                    WinNT.OBJECT_INHERIT_ACE | WinNT.CONTAINER_INHERIT_ACE, WinNT.FILE_ALL_ACCESS, sid)).isTrue();
+            assertThat(Advapi32.INSTANCE.AddAccessAllowedAceEx(acl, WinNT.ACL_REVISION,
+                    WinNT.OBJECT_INHERIT_ACE | WinNT.CONTAINER_INHERIT_ACE, WinNT.FILE_ALL_ACCESS, adminSid.getValue())).isTrue();
+
+            assertThat(Advapi32.INSTANCE.SetNamedSecurityInfo(untrustedRoot.toString(), SE_FILE_OBJECT,
+                    WinNT.DACL_SECURITY_INFORMATION | WinNT.PROTECTED_DACL_SECURITY_INFORMATION,
+                    null, null, acl.getPointer(), null)).isZero();
+
+            assertThatThrownBy(() -> new WindowsPrivateFiles(untrustedRoot))
+                    .isInstanceOf(IOException.class)
+                    .hasMessageContaining("untrusted access");
+        } finally {
+            Kernel32Util.closeHandleRef(token);
+        }
+    }
+
+    @Test
+    void rejectsStorageRootWithSystemStandingAclEntry() throws Exception {
+        Path untrustedRoot = Files.createDirectory(temp.resolve("untrusted-system-acl"));
+        var token = new WinNT.HANDLEByReference();
+        assertThat(Advapi32.INSTANCE.OpenProcessToken(Kernel32.INSTANCE.GetCurrentProcess(), WinNT.TOKEN_QUERY, token)).isTrue();
+        try {
+            var sid = new WinNT.PSID(Advapi32Util.getTokenAccount(token.getValue()).sid);
+            var systemSid = new WinNT.PSIDByReference();
+            assertThat(Advapi32.INSTANCE.ConvertStringSidToSid("S-1-5-18", systemSid)).isTrue();
+
+            var acl = new WinNT.ACL(1024);
+            assertThat(Advapi32.INSTANCE.InitializeAcl(acl, 1024, WinNT.ACL_REVISION)).isTrue();
+            assertThat(Advapi32.INSTANCE.AddAccessAllowedAceEx(acl, WinNT.ACL_REVISION,
+                    WinNT.OBJECT_INHERIT_ACE | WinNT.CONTAINER_INHERIT_ACE, WinNT.FILE_ALL_ACCESS, sid)).isTrue();
+            assertThat(Advapi32.INSTANCE.AddAccessAllowedAceEx(acl, WinNT.ACL_REVISION,
+                    WinNT.OBJECT_INHERIT_ACE | WinNT.CONTAINER_INHERIT_ACE, WinNT.FILE_ALL_ACCESS, systemSid.getValue())).isTrue();
+
+            assertThat(Advapi32.INSTANCE.SetNamedSecurityInfo(untrustedRoot.toString(), SE_FILE_OBJECT,
+                    WinNT.DACL_SECURITY_INFORMATION | WinNT.PROTECTED_DACL_SECURITY_INFORMATION,
+                    null, null, acl.getPointer(), null)).isZero();
+
+            assertThatThrownBy(() -> new WindowsPrivateFiles(untrustedRoot))
+                    .isInstanceOf(IOException.class)
+                    .hasMessageContaining("untrusted access");
+        } finally {
+            Kernel32Util.closeHandleRef(token);
+        }
+    }
+
+    @Test
+    void concurrentDirectoryReplacementFailsDirectIo() throws Exception {
+        Path targetDir = protectedDirectory(documentRoot.resolve("locked-dir"));
+        Path destination = documentRoot.resolve("renamed-locked-dir");
+
+        // 1. Acquire production directory pins via WindowsPrivateFiles.pinDirectories
+        try (var pins = documentFiles.pinDirectories(targetDir, true)) {
+            // While production pins are held, concurrent rename/replacement is blocked by NTFS sharing
+            assertThatThrownBy(() -> Files.move(targetDir, destination))
+                    .isInstanceOf(FileSystemException.class)
+                    .satisfies(e -> assertThat(e.getMessage()).containsAnyOf("used by another process", "locked-dir"));
+
+            // Verify production storage operations continue to function safely under the pinned directory
+            assertThat(Files.isDirectory(targetDir)).isTrue();
+        }
+
+        // 2. Once production pins are released, moving the directory succeeds
+        Files.move(targetDir, destination);
+        assertThat(Files.exists(destination)).isTrue();
+        assertThat(Files.exists(targetDir)).isFalse();
+
+        // Cleanup
+        Files.move(destination, targetDir);
+    }
+
+    @Test
+    void directHandleReadMatchesExpectedBytes() throws Exception {
+        var store = storage(1);
+        var key = store.store(88, DocumentKind.ID_PROOF, image);
+        var document = store.read(key);
+        assertThat(document.bytes()).isEqualTo(image.encoded());
+    }
+
     private FilesystemDocumentStorage storage(int activeVersion) throws IOException {
         return new FilesystemDocumentStorage(documentFiles, new WindowsDpapiMasterKeyProvider(keyFiles, activeVersion),
                 UUID::randomUUID);
@@ -443,7 +534,7 @@ class WindowsDocumentStorageTest {
         }
     }
 
-    static Path protectedDirectory(Path path) throws IOException {
+    public static Path protectedDirectory(Path path) throws IOException {
         Files.createDirectory(path);
         var token = new WinNT.HANDLEByReference();
         assertThat(Advapi32.INSTANCE.OpenProcessToken(Kernel32.INSTANCE.GetCurrentProcess(), WinNT.TOKEN_QUERY, token)).isTrue();

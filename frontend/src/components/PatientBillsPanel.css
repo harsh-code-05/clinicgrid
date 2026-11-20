@@ -1,0 +1,202 @@
+/* PatientBillsPanel.css */
+
+.patient-bills-panel {
+  padding: 24px;
+  max-width: 1100px;
+  margin: 0 auto;
+  width: 100%;
+}
+
+.bills-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 24px;
+  flex-wrap: wrap;
+  gap: 16px;
+}
+
+.bills-header h2 {
+  font-size: 1.5rem;
+  color: var(--text-h, #111827);
+  margin: 0 0 4px 0;
+}
+
+.bills-subtitle {
+  color: var(--text-muted, #6b7280);
+  font-size: 0.9rem;
+  margin: 0;
+}
+
+.btn-refresh-bills {
+  background: var(--bg-surface, #ffffff);
+  border: 1px solid var(--border, #d1d5db);
+  padding: 8px 16px;
+  border-radius: 6px;
+  font-size: 0.85rem;
+  font-weight: 500;
+  cursor: pointer;
+  color: var(--text, #374151);
+}
+
+.btn-refresh-bills:hover:not(:disabled) {
+  background: var(--bg-hover, #f3f4f6);
+}
+
+.bills-summary-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 16px;
+  margin-bottom: 24px;
+}
+
+.summary-card {
+  background: var(--bg-card, #ffffff);
+  border: 1px solid var(--border, #e5e7eb);
+  border-radius: 8px;
+  padding: 16px 20px;
+  display: flex;
+  flex-direction: column;
+}
+
+.summary-label {
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-muted, #6b7280);
+  margin-bottom: 6px;
+}
+
+.summary-value {
+  font-size: 1.6rem;
+  font-weight: 700;
+  color: var(--text-h, #111827);
+}
+
+.summary-sub {
+  font-size: 0.8rem;
+  color: #b45309;
+  margin-top: 4px;
+  font-weight: 600;
+}
+
+.highlight-unpaid {
+  border-left: 4px solid #f59e0b;
+}
+
+.highlight-paid {
+  border-left: 4px solid #10b981;
+}
+
+.bills-error-banner {
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  color: #b91c1c;
+  padding: 12px 16px;
+  border-radius: 6px;
+  margin-bottom: 20px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.bills-loading-state,
+.bills-empty-state {
+  text-align: center;
+  padding: 48px 24px;
+  background: var(--bg-card, #ffffff);
+  border: 1px solid var(--border, #e5e7eb);
+  border-radius: 8px;
+}
+
+.empty-icon {
+  font-size: 3rem;
+  margin-bottom: 12px;
+}
+
+.bills-table-container {
+  background: var(--bg-card, #ffffff);
+  border: 1px solid var(--border, #e5e7eb);
+  border-radius: 8px;
+  overflow-x: auto;
+}
+
+.bills-table {
+  width: 100%;
+  border-collapse: collapse;
+  text-align: left;
+}
+
+.bills-table th {
+  background: var(--bg-header, #f9fafb);
+  border-bottom: 1px solid var(--border, #e5e7eb);
+  padding: 12px 16px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--text-muted, #4b5563);
+  text-transform: uppercase;
+}
+
+.bills-table td {
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border-light, #f3f4f6);
+  font-size: 0.9rem;
+  vertical-align: middle;
+}
+
+.cell-invoice-number {
+  font-family: monospace;
+  font-size: 0.95rem;
+}
+
+.cell-doctor-name {
+  font-weight: 500;
+}
+
+.cell-sub {
+  font-size: 0.8rem;
+  color: var(--text-muted, #6b7280);
+}
+
+.cell-amount {
+  font-size: 1rem;
+}
+
+.status-pill {
+  display: inline-block;
+  padding: 3px 8px;
+  border-radius: 9999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.status-unpaid {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.status-paid {
+  background: #d1fae5;
+  color: #065f46;
+}
+
+.status-void {
+  background: #f3f4f6;
+  color: #6b7280;
+}
+
+.btn-view-invoice {
+  background: #2563eb;
+  color: #ffffff;
+  border: none;
+  padding: 6px 12px;
+  border-radius: 4px;
+  font-size: 0.85rem;
+  cursor: pointer;
+  font-weight: 500;
+}
+
+.btn-view-invoice:hover {
+  background: #1d4ed8;
+}

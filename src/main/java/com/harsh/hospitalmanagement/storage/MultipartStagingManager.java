@@ -17,6 +17,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
 import java.io.IOException;
@@ -136,11 +137,46 @@ public class MultipartStagingManager {
                 ? posixSecurityReader : SystemPosixSecurityReader.INSTANCE;
     }
 
+    private final java.util.concurrent.atomic.AtomicReference<Instant> lastSweep =
+            new java.util.concurrent.atomic.AtomicReference<>(Instant.EPOCH);
+
     @PostConstruct
     public void init() {
         if (stagingDirectory != null) {
             try (var ignored = validateAndPinStagingDirectory()) {
+                lastSweep.set(Instant.now());
                 cleanAbandonedFiles(DEFAULT_ABANDONED_AGE);
+            }
+        }
+    }
+
+    public int scheduledCleanup() {
+        if (stagingDirectory != null) {
+            try (var ignored = validateAndPinStagingDirectory()) {
+                lastSweep.set(Instant.now());
+                return cleanAbandonedFiles(DEFAULT_ABANDONED_AGE);
+            } catch (Exception e) {
+                log.warn("Scheduled multipart staging cleanup encountered an exception: {}", e.getMessage());
+            }
+        }
+        return 0;
+    }
+
+    public void sweepIfStale() {
+        sweepIfStaleInternal();
+    }
+
+    private void sweepIfStaleInternal() {
+        if (stagingDirectory == null) return;
+        Instant now = Instant.now();
+        Instant last = lastSweep.get();
+        if (Duration.between(last, now).compareTo(Duration.ofHours(1)) >= 0) {
+            if (lastSweep.compareAndSet(last, now)) {
+                try {
+                    cleanAbandonedFiles(DEFAULT_ABANDONED_AGE);
+                } catch (Exception e) {
+                    log.debug("Opportunistic staging sweep skipped: {}", e.getMessage());
+                }
             }
         }
     }
@@ -160,11 +196,15 @@ public class MultipartStagingManager {
             throw new DocumentStorageUnavailableException("Multipart staging directory is not configured");
         }
         try {
+            StagingDirectoryPin pin;
             if (windowsPlatform) {
-                return validateAndPinWindows(true);
+                pin = validateAndPinWindows(true);
+            } else {
+                validatePosixDirectory(stagingDirectory, true);
+                pin = new StagingDirectoryPin(null, stagingDirectory);
             }
-            validatePosixDirectory(stagingDirectory, true);
-            return new StagingDirectoryPin(null, stagingDirectory);
+            sweepIfStaleInternal();
+            return pin;
         } catch (DocumentStorageUnavailableException e) {
             throw e;
         } catch (UnsupportedOperationException e) {
@@ -380,13 +420,12 @@ public class MultipartStagingManager {
         validateWindowsPathSyntax(stagingDirectory);
 
         var processAccount = windowsSecurityReader.processAccount();
-        Set<String> stagingSids = new HashSet<>();
-        stagingSids.add(processAccount.sidString());
-        stagingSids.add(SYSTEM_SID);
-        stagingSids.add(ADMINISTRATORS_SID);
-        Set<String> trustedStagingSids = Set.copyOf(stagingSids);
+        Set<String> trustedStagingSids = Set.of(processAccount.sidString());
 
-        Set<String> ancestorOwners = new HashSet<>(stagingSids);
+        Set<String> ancestorOwners = new HashSet<>();
+        ancestorOwners.add(processAccount.sidString());
+        ancestorOwners.add(SYSTEM_SID);
+        ancestorOwners.add(ADMINISTRATORS_SID);
         ancestorOwners.add(TRUSTED_INSTALLER_SID);
         Set<String> trustedAncestorOwners = Set.copyOf(ancestorOwners);
 

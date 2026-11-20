@@ -27,6 +27,14 @@ public class DoctorController {
         this.doctorService = doctorService;
     }
 
+    @PostMapping("/register")
+    public ResponseEntity<DoctorResponse> registerDoctor(
+            @Valid @RequestBody com.harsh.hospitalmanagement.dto.DoctorRegisterRequest request) {
+
+        Doctor doctor = doctorService.registerDoctor(request);
+        return ResponseEntity.status(org.springframework.http.HttpStatus.CREATED).body(toResponse(doctor));
+    }
+
     @PostMapping
     public ResponseEntity<DoctorResponse> createDoctor(
             @Valid @RequestBody DoctorRequest request,
@@ -93,6 +101,7 @@ public class DoctorController {
         response.setLastName(doctor.getLastName());
         response.setQualification(doctor.getQualification());
         response.setExperience(doctor.getExperience());
+        response.setVerificationStatus(doctor.getVerificationStatus());
         response.setUser(userResponse);
         response.setSpecialization(specializationResponse);
 

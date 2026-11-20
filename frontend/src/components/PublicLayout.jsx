@@ -46,12 +46,12 @@ export function PublicHeader() {
           >
             Video Consultation
           </Link>
-          <Link to="/login" onClick={close}>For Doctors</Link>
+          <Link to="/register/doctor" onClick={close}>For Doctors</Link>
         </nav>
         <div className="public-header__actions">
           <span className="public-location" aria-label="Current city">⌾ Kanpur</span>
           <Link className="hms-button hms-button--outline" to="/login">Log In</Link>
-          <button className="hms-button" type="button" onClick={() => navigate('/login')}>Sign Up</button>
+          <button className="hms-button" type="button" onClick={() => navigate('/register/patient')}>Sign Up</button>
         </div>
       </div>
     </header>
@@ -63,7 +63,7 @@ export function PublicFooter() {
     <footer className="public-footer">
       <div className="public-footer__top">
         <div><HmsLogo reversed /><p>Healthcare discovery for India.</p></div>
-        <div><strong>Explore</strong><Link to="/">About HMS</Link><Link to="/discover">Find Doctors</Link><Link to="/login">For Doctors</Link></div>
+        <div><strong>Explore</strong><Link to="/">About HMS</Link><Link to="/discover">Find Doctors</Link><Link to="/register/doctor">For Doctors</Link></div>
         <div><strong>Support</strong><span>Help and Support</span><span>Privacy Policy</span><span>Terms of Service</span></div>
       </div>
       <div className="public-footer__bottom">HMS · Healthcare Discovery Platform</div>

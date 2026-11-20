@@ -93,6 +93,7 @@ class AppointmentServiceTest {
         Doctor doctor = new Doctor();
         doctor.setId(id);
         doctor.setUser(user);
+        doctor.setVerificationStatus(com.harsh.hospitalmanagement.enums.VerificationStatus.VERIFIED);
         return doctor;
     }
 
@@ -266,6 +267,25 @@ class AppointmentServiceTest {
     // -------------------------------------------------------------------------
     // bookAppointment Tests
     // -------------------------------------------------------------------------
+
+    @ParameterizedTest
+    @EnumSource(value = com.harsh.hospitalmanagement.enums.VerificationStatus.class, names = {"UNVERIFIED", "SUBMITTED", "UNDER_REVIEW", "REJECTED"})
+    void bookAppointment_shouldThrowForbidden_whenDoctorNotVerified(com.harsh.hospitalmanagement.enums.VerificationStatus status) {
+        Patient patient = createPatient(1L, "patient@test.com");
+        Doctor doctor = createDoctor(2L, "doctor@test.com");
+        doctor.setVerificationStatus(status);
+        AppointmentSlot slot = createSlot(3L, doctor, SlotStatus.AVAILABLE);
+
+        when(patientRepository.findById(1L)).thenReturn(Optional.of(patient));
+        when(doctorRepository.findById(2L)).thenReturn(Optional.of(doctor));
+
+        assertThatThrownBy(() -> appointmentService.bookAppointment(1L, 2L, 3L, slot.getDate(), "Checkup", account("patient@test.com")))
+                .isInstanceOf(ForbiddenException.class)
+                .hasMessage("Doctor is not verified for patient appointments");
+
+        verify(appointmentRepository, never()).save(any());
+        verify(auditLogService, never()).logEvent(any(), any(), any(), any(), any(), any(), any());
+    }
 
     @Test
     void bookAppointment_shouldSaveAndLogAuditEvent_whenValid() {

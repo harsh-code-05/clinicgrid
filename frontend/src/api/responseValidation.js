@@ -87,7 +87,7 @@ export function requireSlotGenerationResult(response, availability) {
 }
 
 export const VERIFICATION_STATUSES = ['UNVERIFIED', 'SUBMITTED', 'UNDER_REVIEW', 'VERIFIED', 'REJECTED'];
-export const ADMIN_QUEUE_STATUSES = ['SUBMITTED', 'UNDER_REVIEW', 'VERIFIED', 'REJECTED'];
+export const ADMIN_QUEUE_STATUSES = ['UNVERIFIED', 'SUBMITTED', 'UNDER_REVIEW', 'VERIFIED', 'REJECTED'];
 export const VERIFICATION_DOCUMENT_KINDS = ['ID_PROOF', 'QUALIFICATION'];
 export const VERIFICATION_IMAGE_MIME_TYPES = ['image/png', 'image/jpeg'];
 

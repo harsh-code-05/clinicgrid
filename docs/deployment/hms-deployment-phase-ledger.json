@@ -1,0 +1,189 @@
+{
+  "project": "Hospital Management System (HMS)",
+  "phase": "2C",
+  "timestamp": "2026-11-18T22:54:00+05:30",
+  "target_domains": {
+    "apex": "clinicgrid.tech",
+    "frontend": "https://hms.clinicgrid.tech",
+    "backend": "https://api.clinicgrid.tech"
+  },
+  "git_release_readiness_audit": {
+    "status": "MANIFEST_PREPARED_AWAITING_APPROVAL",
+    "timestamp": "2026-11-18T22:54:00+05:30",
+    "working_tree_inspection": {
+      "branch": "main",
+      "remote": "origin",
+      "remote_commit": "777b4b9",
+      "remote_commit_subject": "feat(appointments): add cancellation workflow to patient doctor and admin portals",
+      "tracked_modified_files_count": 90,
+      "untracked_files_count": 182,
+      "total_modified_or_untracked": 272
+    },
+    "release_manifest_summary": {
+      "files_to_include_count": 208,
+      "files_to_include_breakdown": {
+        "tracked_modified": 90,
+        "root_docker_and_config": 2,
+        "database_migrations": 7,
+        "deployment_docs_and_ledger": 2,
+        "frontend_public": 1,
+        "frontend_source": 15,
+        "frontend_tests": 5,
+        "deployment_and_safety_scripts": 8,
+        "backend_java_source": 41,
+        "backend_resources": 5,
+        "backend_test_source": 32
+      },
+      "files_to_exclude_count": 64,
+      "files_to_exclude_breakdown": {
+        "scratch_scripts_and_harnesses": 43,
+        "frontend_e2e_local_scripts": 6,
+        "local_wrangler_cache": 1,
+        "temporary_build_logs": 1,
+        "root_audit_diagnostic_reports": 13
+      }
+    },
+    "security_and_secret_scan": {
+      "status": "PASSED_CLEAN",
+      "production_secrets_found": 0,
+      "local_credentials_intercepted_and_excluded": [
+        "frontend/e2e/run-e2e.mjs (local PGPASSWORD excluded)",
+        "frontend/e2e/run-ai-e2e.mjs (local PGPASSWORD excluded)",
+        "scratch/*.mjs (local test database credentials excluded)"
+      ],
+      "env_files_audit": "Clean (only .env.example with blank placeholder present)"
+    },
+    "build_and_compilation_verification": {
+      "backend_test_compile": "SUCCESS",
+      "frontend_production_build": "SUCCESS (Vite dist bundle generated)"
+    },
+    "proposed_commit": {
+      "subject": "feat(release): phase 2b/2c cloud production deployment readiness",
+      "scope": "Docker, S3 storage, release attestation, Workers AI, migrations, billing, video signaling, frontend"
+    },
+    "user_action_required": "Awaiting explicit user authorization before staging, committing, or pushing to GitHub"
+  },
+  "stages": {
+    "stage_0_read_only_preflight": {
+      "name": "Read-Only Preflight",
+      "status": "VERIFIED",
+      "details": {
+        "worktree_inspected": true,
+        "manifest_verified": true,
+        "manifest_migrations_count": 9,
+        "manifest_checksums_match": true,
+        "phase_2b51_remediations_verified": true,
+        "rehearsal_db_preserved": true
+      }
+    },
+    "stage_1_provider_and_cost_preflight": {
+      "name": "Provider and Cost Preflight",
+      "status": "VERIFIED",
+      "details": {
+        "cost_policy_compliant": true,
+        "total_monthly_estimated_cost_usd": 0.00,
+        "backend_provider": "Render Web Service (Free tier)",
+        "frontend_provider": "Cloudflare Pages (Free tier)",
+        "database_provider": "Neon PostgreSQL (Free tier, PG >= 18.1)",
+        "storage_provider": "Cloudflare R2 (Free tier)",
+        "ai_provider": "Cloudflare Workers AI (Free tier: 10,000 neurons/day)",
+        "dns_provider": "Cloudflare DNS (Free zone)"
+      }
+    },
+    "stage_2_cloudflare_account_and_domain": {
+      "name": "Cloudflare Account and Domain",
+      "status": "BLOCKED",
+      "blocker_type": "USER_ACTION_REQUIRED",
+      "details": {
+        "domain": "clinicgrid.tech",
+        "current_nameservers": ["ns1.dns.host", "ns2.dns.host", "ns3.dns.host", "ns4.dns.host"],
+        "dnssec_active": false,
+        "cloudflare_account_id_available": true,
+        "cloudflare_token_zone_edit_permission": false,
+        "action_required": "Create zone clinicgrid.tech in Cloudflare Dashboard and update registrar nameservers to Cloudflare authoritative nameservers"
+      }
+    },
+    "stage_3_neon_postgresql": {
+      "name": "Neon PostgreSQL Provisioning & Migration",
+      "status": "CONFIGURED",
+      "blocker_type": "AWAITING_CLOUD_PROVISIONING",
+      "details": {
+        "migration_script_ready": true,
+        "script_path": "scripts/deploy-neon-migrations.ps1",
+        "pester_tests_passed": 34,
+        "validate_only_mode_passed": true,
+        "role_privilege_separation_enforced": true,
+        "runtime_role_temp_privilege_granted": true,
+        "action_required": "User provisions Neon PostgreSQL 18.1+ project, creates hms_mig_prod and hms_app_prod roles, and executes deployment script with target OID"
+      }
+    },
+    "stage_4_cloudflare_r2": {
+      "name": "Cloudflare R2 Private Document Storage",
+      "status": "CONFIGURED",
+      "blocker_type": "AWAITING_CLOUD_PROVISIONING",
+      "details": {
+        "storage_provider": "S3 (Cloudflare R2 compatible)",
+        "encryption": "AES-256-GCM authenticated encryption",
+        "multi_key_rotation_ready": true,
+        "action_required": "User creates private bucket 'hms-private-documents-prod' and generates R2 S3-compatible API token"
+      }
+    },
+    "stage_5_cloudflare_workers_ai": {
+      "name": "Cloudflare Workers AI",
+      "status": "VERIFIED",
+      "details": {
+        "configured_in_environment": true,
+        "live_smoke_test_passed": true,
+        "responsive_model": "@cf/meta/llama-3.1-8b-instruct",
+        "fallback_mechanism": "Deterministic Hospital FAQ Knowledge Base",
+        "emergency_escalation_tested": true
+      }
+    },
+    "stage_6_render_backend_preparation": {
+      "name": "Render Backend Preparation",
+      "status": "CONFIGURED",
+      "blocker_type": "GIT_RELEASE_BLOCKER",
+      "details": {
+        "dockerfile_ready": true,
+        "health_check_endpoint": "/api/health",
+        "environment_variable_matrix_ready": true,
+        "variable_count": 32,
+        "action_required": "Do not trigger deployment until local working tree changes are committed and published to GitHub with user approval"
+      }
+    },
+    "stage_7_cloudflare_pages_preparation": {
+      "name": "Cloudflare Pages Preparation",
+      "status": "CONFIGURED",
+      "blocker_type": "GIT_RELEASE_BLOCKER",
+      "details": {
+        "vite_build_passed": true,
+        "spa_redirects_configured": true,
+        "frontend_tests_passed": 195,
+        "target_api_base_url": "https://api.clinicgrid.tech",
+        "target_ws_url": "wss://api.clinicgrid.tech/ws/signaling",
+        "action_required": "Do not trigger deployment until local working tree changes are committed and published to GitHub with user approval"
+      }
+    },
+    "stage_8_custom_domain_and_network": {
+      "name": "Custom Domain and Network",
+      "status": "NOT_EXECUTED",
+      "details": {
+        "target_pages_cname": "hms.clinicgrid.tech",
+        "target_render_cname": "api.clinicgrid.tech",
+        "cors_exact_origin": "https://hms.clinicgrid.tech",
+        "samesite_cookie_mode": "None",
+        "prerequisite": "Active Render Web Service and Cloudflare Pages deployment required before binding DNS"
+      }
+    },
+    "stage_9_production_verification": {
+      "name": "Production Verification",
+      "status": "NOT_EXECUTED",
+      "details": {
+        "runbook_verification_suite_ready": true,
+        "synthetic_testing_only": true,
+        "prerequisite": "Active cloud deployment required"
+      }
+    }
+  },
+  "overall_verdict": "CONFIGURED_AND_PREPARED_AWAITING_ACCOUNT_PROVISIONING_AND_GIT_RELEASE"
+}

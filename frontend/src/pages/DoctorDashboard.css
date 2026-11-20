@@ -467,6 +467,43 @@
   cursor: not-allowed;
 }
 
+.btn-join-video {
+  padding: 8px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  border: 1px solid #059669;
+  background: #047857;
+  color: #ffffff;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.2s;
+  white-space: nowrap;
+}
+
+.btn-join-video:hover:not(:disabled) {
+  background: #065f46;
+}
+
+.btn-join-video:disabled,
+.btn-join-video.disabled {
+  background: #64748b;
+  border-color: #475569;
+  color: #e2e8f0;
+  cursor: not-allowed;
+  opacity: 0.7;
+}
+
+.video-locked-notice {
+  background: #fef3c7;
+  color: #92400e;
+  border: 1px solid #fde68a;
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-size: 12px;
+  font-weight: 500;
+  margin-top: 6px;
+}
+
 @media (prefers-color-scheme: dark) {
   .btn-complete-appt {
     color: #4ade80;

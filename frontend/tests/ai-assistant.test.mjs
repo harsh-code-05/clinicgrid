@@ -62,18 +62,18 @@ test('create, send and delete use existing cookie/CSRF client and never send a p
     assert.equal(call.headers.get('X-CSRF-TOKEN'), 'test-csrf');
     assert.ok(!call.data || !Object.hasOwn(JSON.parse(call.data), 'patientId'));
   }
-  assert.deepEqual(JSON.parse(mutations[1].data), request);
-  assert.equal(mutations[1].timeout, 10000);
+  assert.deepEqual(JSON.parse(mutations[1].data), { ...request, includeAppointments: false });
+  assert.equal(mutations[1].timeout, 20000);
 });
 
-test('assistant send omits legacy context flags and untrusted extra fields', async () => {
+test('assistant send passes opt-in appointments flag and strips untrusted extra fields', async () => {
   let submitted;
   const service = createAssistantService({ post: async (_path, body) => {
     submitted = body;
     return json({ messages: [message, reply] });
   } });
   await service.send(1, { ...request, includeAppointments: true, patientId: 99 });
-  assert.deepEqual(submitted, request);
+  assert.deepEqual(submitted, { ...request, includeAppointments: true });
 });
 
 test('an expired assistant send expires the central session and is never replayed', async () => {

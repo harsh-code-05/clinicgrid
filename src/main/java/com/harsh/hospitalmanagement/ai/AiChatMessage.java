@@ -38,15 +38,25 @@ public class AiChatMessage {
     @Column(name = "include_appointments", nullable = false, updatable = false)
     private boolean includeAppointments;
 
+    @Enumerated(EnumType.STRING)
+    @Column(name = "source", nullable = false, length = 32, updatable = false)
+    private AiResponseSource source;
+
     @Column(name = "created_at", nullable = false, updatable = false)
     private LocalDateTime createdAt;
 
     AiChatMessage(AiChatSession session, Role role, String content, UUID requestId, boolean includeAppointments) {
+        this(session, role, content, requestId, includeAppointments,
+                role == Role.USER ? AiResponseSource.USER : AiResponseSource.FAQ_FALLBACK);
+    }
+
+    AiChatMessage(AiChatSession session, Role role, String content, UUID requestId, boolean includeAppointments, AiResponseSource source) {
         this.session = session;
         this.role = role;
         this.content = content;
         this.requestId = requestId;
         this.includeAppointments = includeAppointments;
+        this.source = source != null ? source : (role == Role.USER ? AiResponseSource.USER : AiResponseSource.FAQ_FALLBACK);
         this.createdAt = LocalDateTime.now().truncatedTo(java.time.temporal.ChronoUnit.MICROS);
     }
 }

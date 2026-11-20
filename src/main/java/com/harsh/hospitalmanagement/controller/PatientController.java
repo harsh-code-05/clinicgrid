@@ -23,6 +23,14 @@ public class PatientController {
         this.patientService = patientService;
     }
 
+    @PostMapping("/register")
+    public ResponseEntity<PatientResponse> registerPatient(
+            @Valid @RequestBody com.harsh.hospitalmanagement.dto.PatientRegisterRequest request) {
+
+        Patient patient = patientService.registerPatient(request);
+        return ResponseEntity.status(org.springframework.http.HttpStatus.CREATED).body(toResponse(patient));
+    }
+
     @PostMapping("/me")
     public ResponseEntity<PatientResponse> createMyPatientProfile(
             @Valid @RequestBody PatientProfileRequest request,

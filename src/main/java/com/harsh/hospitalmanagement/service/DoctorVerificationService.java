@@ -50,6 +50,7 @@ import java.util.stream.Stream;
 public class DoctorVerificationService {
 
     private static final List<VerificationStatus> ADMIN_QUEUE_STATUSES = List.of(
+            VerificationStatus.UNVERIFIED,
             VerificationStatus.SUBMITTED,
             VerificationStatus.UNDER_REVIEW,
             VerificationStatus.REJECTED,
@@ -118,12 +119,34 @@ public class DoctorVerificationService {
                 .map(event -> new DoctorVerificationResponse.HistoryEntry(event.getPreviousStatus(),
                         event.getNewStatus(), event.getActorRole(), event.getOccurredAt()))
                 .toList();
+
+        String fullName = Stream.of(doctor.getFirstName(), doctor.getLastName())
+                .filter(Objects::nonNull)
+                .map(String::trim)
+                .filter(part -> !part.isEmpty())
+                .collect(Collectors.joining(" "));
+        String doctorName = fullName.isEmpty() ? "Doctor #" + doctor.getId() : "Dr. " + fullName;
+        String email = doctor.getUser() != null ? doctor.getUser().getEmail() : null;
+        String specialization = doctor.getSpecialization() != null ? doctor.getSpecialization().getName() : null;
+        String qualification = doctor.getQualification();
+        Integer experience = doctor.getExperience();
+
+        boolean storageAvailable = documentStorage != null;
+        String documentStatus = resolveDocumentStatus(doctor, storageAvailable);
+
         return new DoctorVerificationResponse(
                 doctor.getId(),
+                doctorName,
+                email,
+                specialization,
+                qualification,
+                experience,
                 doctor.getVerificationStatus(),
                 doctor.getRegistrationNumber(),
                 doctor.getMedicalCouncil(),
                 doctor.getRegistrationYear(),
+                documentStatus,
+                storageAvailable,
                 extractLatestRejectionReason(historyEntities),
                 computeReviewVersion(doctor, historyEntities),
                 events
@@ -145,9 +168,6 @@ public class DoctorVerificationService {
         }
         if (size < 1 || size > MAX_QUEUE_PAGE_SIZE) {
             throw new BadRequestException("Page size must be between 1 and " + MAX_QUEUE_PAGE_SIZE);
-        }
-        if (statusFilter == VerificationStatus.UNVERIFIED) {
-            throw new BadRequestException("Status filter must be one of: SUBMITTED, UNDER_REVIEW, VERIFIED, REJECTED");
         }
 
         Collection<VerificationStatus> statuses = statusFilter != null
@@ -351,7 +371,23 @@ public class DoctorVerificationService {
                 doctor, VerificationDocumentKind.QUALIFICATION, documents, documentStorage, imageValidator);
     }
 
-    private static DoctorVerificationQueueItemResponse toQueueItem(
+    private String resolveDocumentStatus(Doctor doctor, boolean storageAvailable) {
+        boolean hasDocs = doctor.getIdProofDocumentPath() != null || doctor.getQualificationDocumentPath() != null;
+        boolean hasBoth = doctor.getIdProofDocumentPath() != null && doctor.getQualificationDocumentPath() != null;
+
+        if (!storageAvailable) {
+            return hasDocs ? "STORAGE_UNAVAILABLE" : "MISSING";
+        }
+        if (hasBoth) {
+            return "SUBMITTED";
+        }
+        if (hasDocs) {
+            return "PARTIALLY_SUBMITTED";
+        }
+        return "MISSING";
+    }
+
+    private DoctorVerificationQueueItemResponse toQueueItem(
             Doctor doctor,
             List<DoctorVerificationHistory> entries) {
         String fullName = Stream.of(doctor.getFirstName(), doctor.getLastName())
@@ -360,7 +396,10 @@ public class DoctorVerificationService {
                 .filter(part -> !part.isEmpty())
                 .collect(Collectors.joining(" "));
         String doctorName = fullName.isEmpty() ? "Doctor #" + doctor.getId() : "Dr. " + fullName;
+        String email = doctor.getUser() != null ? doctor.getUser().getEmail() : null;
         String specialization = doctor.getSpecialization() != null ? doctor.getSpecialization().getName() : null;
+        String qualification = doctor.getQualification();
+        Integer experience = doctor.getExperience();
 
         DoctorVerificationHistory latestEntry = entries.isEmpty() ? null : entries.getFirst();
         Instant submittedAt = entries.stream()
@@ -369,10 +408,15 @@ public class DoctorVerificationService {
                 .findFirst()
                 .orElse(null);
 
+        boolean storageAvailable = documentStorage != null;
+        String documentStatus = resolveDocumentStatus(doctor, storageAvailable);
+
         return new DoctorVerificationQueueItemResponse(
                 doctor.getId(),
                 doctorName,
                 specialization,
+                qualification,
+                experience,
                 doctor.getVerificationStatus(),
                 submittedAt,
                 latestEntry != null ? latestEntry.getOccurredAt() : null,
@@ -380,6 +424,8 @@ public class DoctorVerificationService {
                 doctor.getRegistrationNumber(),
                 doctor.getMedicalCouncil(),
                 doctor.getRegistrationYear(),
+                documentStatus,
+                storageAvailable,
                 extractLatestRejectionReason(entries)
         );
     }

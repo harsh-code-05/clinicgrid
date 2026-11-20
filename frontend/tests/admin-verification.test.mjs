@@ -1482,3 +1482,246 @@ test('FIX 2 test 6: slow async parseApiErrorDetails 409 preview error on Doctor 
   assert.ok(nodes(tree).find((n) => n.type === 'img' && n.props.src === createdUrls[0]));
   unmount();
 });
+
+test('queue filtering supports UNVERIFIED filter and queries /admin/doctor-verifications with status=UNVERIFIED', async () => {
+  const queueCalls = [];
+  const { render, unmount } = await setupAdminPanel({
+    apiHandlers: {
+      get: async (url, config = {}) => {
+        if (url === '/admin/doctor-verifications') {
+          queueCalls.push(JSON.parse(JSON.stringify(config.params)));
+          return {
+            status: 200,
+            headers: JSON_HEADERS,
+            data: {
+              items: [
+                makeQueueItem(854, {
+                  doctorName: 'Dr. Amit Sharma',
+                  specialization: 'Neurology',
+                  qualification: 'MBBS,MD',
+                  experience: 14,
+                  status: 'UNVERIFIED',
+                  documentStatus: 'STORAGE_UNAVAILABLE',
+                  storageAvailable: false,
+                }),
+              ],
+              page: 0,
+              size: 10,
+              totalElements: 1,
+              totalPages: 1,
+              hasNext: false,
+              hasPrevious: false,
+            },
+          };
+        }
+        return { status: 200, headers: JSON_HEADERS, data: [] };
+      },
+    },
+  });
+
+  let tree = await render();
+  const unverifiedBtn = nodes(tree).find((n) => n.type === 'button' && text(n) === 'Unverified');
+  assert.ok(unverifiedBtn, 'Unverified filter pill should be present');
+  unverifiedBtn.props.onClick();
+  tree = await render();
+  assert.deepEqual(queueCalls.at(-1), { page: 0, size: 10, status: 'UNVERIFIED' });
+  assert.match(text(tree), /Dr\. Amit Sharma/);
+  assert.match(text(tree), /Neurology/);
+  unmount();
+});
+
+test('admin panel renders UNVERIFIED doctor with storage unavailable warning and disables approval', async () => {
+  const { render, unmount } = await setupAdminPanel({
+    apiHandlers: {
+      get: async (url) => {
+        if (url === '/admin/doctor-verifications') {
+          return {
+            status: 200,
+            headers: JSON_HEADERS,
+            data: {
+              items: [
+                makeQueueItem(854, {
+                  doctorName: 'Dr. Amit Sharma',
+                  specialization: 'Neurology',
+                  qualification: 'MBBS,MD',
+                  experience: 14,
+                  status: 'UNVERIFIED',
+                  documentStatus: 'STORAGE_UNAVAILABLE',
+                  storageAvailable: false,
+                }),
+              ],
+              page: 0,
+              size: 10,
+              totalElements: 1,
+              totalPages: 1,
+              hasNext: false,
+              hasPrevious: false,
+            },
+          };
+        }
+        if (url === '/doctors/854/verification') {
+          return {
+            status: 200,
+            headers: JSON_HEADERS,
+            data: makeDetails(854, {
+              status: 'UNVERIFIED',
+              doctorName: 'Dr. Amit Sharma',
+              email: 'doctoramit@gmail.com',
+              specialization: 'Neurology',
+              qualification: 'MBBS,MD',
+              experience: 14,
+              documentStatus: 'STORAGE_UNAVAILABLE',
+              storageAvailable: false,
+              reviewVersion: 'rev-854',
+            }),
+          };
+        }
+        if (url === '/doctors/854/verification/documents') {
+          return { status: 200, headers: JSON_HEADERS, data: [] };
+        }
+        return { status: 200, headers: JSON_HEADERS, data: [] };
+      },
+    },
+  });
+
+  let tree = await render();
+  const reviewBtn = nodes(tree).find((n) => n.type === 'button' && text(n).includes('Review Dossier'));
+  assert.ok(reviewBtn, 'Review Dossier button should be present for Doctor 854');
+  await reviewBtn.props.onClick();
+  tree = await render();
+
+  const renderedText = text(tree);
+  assert.match(renderedText, /Dr\. Amit Sharma/);
+  assert.match(renderedText, /doctoramit@gmail\.com/);
+  assert.match(renderedText, /MBBS,MD/);
+  assert.match(renderedText, /Doctor Registration Status: UNVERIFIED/);
+  assert.match(renderedText, /Document storage unavailable — verification pending/);
+
+  // UNVERIFIED doctor cannot be approved directly (decision controls only exist during UNDER_REVIEW)
+  const approveBtn = nodes(tree).find((n) => n.type === 'button' && text(n).includes('Approve Verification'));
+  assert.equal(approveBtn, undefined, 'Approve button must NOT be rendered for UNVERIFIED doctor');
+  unmount();
+});
+
+test('admin panel disables Approve button when doctor is UNDER_REVIEW but storage is unavailable', async () => {
+  const { render, unmount } = await setupAdminPanel({
+    apiHandlers: {
+      get: async (url) => {
+        if (url === '/admin/doctor-verifications') {
+          return {
+            status: 200,
+            headers: JSON_HEADERS,
+            data: {
+              items: [
+                makeQueueItem(901, {
+                  doctorName: 'Dr. Review Doctor',
+                  status: 'UNDER_REVIEW',
+                  documentStatus: 'STORAGE_UNAVAILABLE',
+                  storageAvailable: false,
+                }),
+              ],
+              page: 0,
+              size: 10,
+              totalElements: 1,
+              totalPages: 1,
+              hasNext: false,
+              hasPrevious: false,
+            },
+          };
+        }
+        if (url === '/doctors/901/verification') {
+          return {
+            status: 200,
+            headers: JSON_HEADERS,
+            data: makeDetails(901, {
+              status: 'UNDER_REVIEW',
+              doctorName: 'Dr. Review Doctor',
+              email: 'reviewdoc@hms.test',
+              documentStatus: 'STORAGE_UNAVAILABLE',
+              storageAvailable: false,
+              reviewVersion: 'rev-901',
+            }),
+          };
+        }
+        if (url === '/doctors/901/verification/documents') {
+          return { status: 200, headers: JSON_HEADERS, data: makeDocs(901) };
+        }
+        return { status: 200, headers: JSON_HEADERS, data: [] };
+      },
+    },
+  });
+
+  let tree = await render();
+  const reviewBtn = nodes(tree).find((n) => n.type === 'button' && text(n).includes('Review Dossier'));
+  assert.ok(reviewBtn, 'Review Dossier button should be present');
+  await reviewBtn.props.onClick();
+  tree = await render();
+
+  const renderedText = text(tree);
+  assert.match(renderedText, /Document storage unavailable — verification pending/);
+
+  const approveBtn = nodes(tree).find((n) => n.type === 'button' && text(n).includes('Approve Verification'));
+  assert.ok(approveBtn, 'Approve button should exist for doctor in UNDER_REVIEW');
+  assert.equal(approveBtn.props.disabled, true, 'Approve button must be disabled when storage is unavailable even if documents are present');
+  unmount();
+});
+
+test('AdminVerificationPanel: approve button is enabled when 2 documents are present and storage is available', async () => {
+  const { render, unmount } = await setupAdminPanel({
+    apiHandlers: {
+      get: async (url) => {
+        if (url === '/admin/doctor-verifications') {
+          return {
+            status: 200,
+            headers: JSON_HEADERS,
+            data: {
+              items: [
+                makeQueueItem(902, {
+                  doctorName: 'Dr. Valid Doctor',
+                  status: 'UNDER_REVIEW',
+                  documentStatus: 'SUBMITTED',
+                  storageAvailable: true,
+                }),
+              ],
+              page: 0,
+              size: 10,
+              totalElements: 1,
+              totalPages: 1,
+              hasPrevious: false,
+              hasNext: false,
+            },
+          };
+        }
+        if (url === '/doctors/902/verification') {
+          return {
+            status: 200,
+            headers: JSON_HEADERS,
+            data: makeDetails(902, {
+              status: 'UNDER_REVIEW',
+              doctorName: 'Dr. Valid Doctor',
+              email: 'validdoc@hms.test',
+              documentStatus: 'SUBMITTED',
+              storageAvailable: true,
+              reviewVersion: 'rev-902',
+            }),
+          };
+        }
+        if (url === '/doctors/902/verification/documents') {
+          return { status: 200, headers: JSON_HEADERS, data: makeDocs(902) };
+        }
+        return { status: 200, headers: JSON_HEADERS, data: [] };
+      },
+    },
+  });
+
+  let tree = await render();
+  const reviewBtn = nodes(tree).find((n) => n.type === 'button' && text(n).includes('Review Dossier'));
+  assert.ok(reviewBtn, 'Review Dossier button should be present');
+  await reviewBtn.props.onClick();
+  tree = await render();
+
+  const approveBtn = nodes(tree).find((n) => n.type === 'button' && text(n).includes('Approve Verification'));
+  assert.ok(approveBtn, 'Approve button should exist');
+  assert.equal(approveBtn.props.disabled, false, 'Approve button must be enabled when documents are present and storage is available');
+  unmount();
+});

@@ -82,12 +82,21 @@ public class FaqChatbot {
                             + "Ask me for instructions about registration, signing in, specializations, booking or cancellation. I use predefined answers and do not access your personal records.")
     );
 
-    public String answer(String message) {
+    public static final String EMERGENCY_RESPONSE = "This chat cannot assess an emergency. For a possible emergency, contact local emergency services or go to the nearest emergency department now.";
+
+    public static boolean isEmergency(String message) {
+        if (message == null || message.isBlank()) return false;
         String text = Normalizer.normalize(message, Normalizer.Form.NFKC).toLowerCase(Locale.ROOT)
                 .replaceAll("[^\\p{L}\\p{N}]+", " ").strip();
-        if (EMERGENCY.matcher(text).find()) {
-            return "This chat cannot assess an emergency. For a possible emergency, contact local emergency services or go to the nearest emergency department now.";
+        return EMERGENCY.matcher(text).find();
+    }
+
+    public String answer(String message) {
+        if (isEmergency(message)) {
+            return EMERGENCY_RESPONSE;
         }
+        String text = Normalizer.normalize(message, Normalizer.Form.NFKC).toLowerCase(Locale.ROOT)
+                .replaceAll("[^\\p{L}\\p{N}]+", " ").strip();
         if (MEDICAL.matcher(text).find()) {
             return "I cannot diagnose conditions, prescribe medicines, suggest dosages or recommend treatment. Please consult a qualified healthcare professional. "
                     + "I can explain how to use HMS and book a consultation.";

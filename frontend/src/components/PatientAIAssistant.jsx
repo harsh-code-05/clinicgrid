@@ -8,11 +8,22 @@ function timestamp(value) {
   return Number.isNaN(date.valueOf()) ? '' : date.toLocaleString();
 }
 
+function renderSourceBadge(source) {
+  if (source === 'CLOUDFLARE_LLM') {
+    return <span className="assistant-source-badge assistant-source-cloudflare" title="Powered by Cloudflare Workers AI GLM-4.7-Flash">Cloudflare AI (GLM-4.7-Flash)</span>;
+  }
+  if (source === 'EMERGENCY_ESCALATION') {
+    return <span className="assistant-source-badge assistant-source-emergency" role="alert" title="Deterministic emergency escalation">Emergency Escalation</span>;
+  }
+  return <span className="assistant-source-badge assistant-source-faq" title="Hospital FAQ Knowledge Base">FAQ Knowledge Base</span>;
+}
+
 export default function PatientAIAssistant() {
   const [sessions, setSessions] = useState([]);
   const [selected, setSelected] = useState(null);
   const [messages, setMessages] = useState([]);
   const [draft, setDraft] = useState('');
+  const [includeAppointments, setIncludeAppointments] = useState(false);
   const [loadingSessions, setLoadingSessions] = useState(true);
   const [loadingMessages, setLoadingMessages] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -133,7 +144,8 @@ export default function PatientAIAssistant() {
     setError('');
     const id = selected;
     try {
-      const request = messageRequest(pending.current, draft);
+      const baseReq = messageRequest(pending.current, draft);
+      const request = { ...baseReq, includeAppointments };
       pending.current = request;
       const turn = await assistant.send(id, request);
       if (mounted.current && active.current === id) {
@@ -218,20 +230,25 @@ export default function PatientAIAssistant() {
       </aside>
       <div className="assistant-conversation">
         <header>
-          <div><h2>Patient AI Assistant</h2><p>HMS FAQ help for login, doctors and appointments.</p></div>
+          <div><h2>Patient AI Assistant</h2><p>General health education and HMS portal navigation.</p></div>
           {selected !== null && <button type="button" disabled={busy} onClick={deleteConversation}>Delete chat</button>}
         </header>
-        <p className="assistant-safety">Answers come from a predefined HMS FAQ, without looking up your appointments. This chat cannot change bookings or provide medical advice. For emergencies, contact local emergency services.</p>
+        <div className="assistant-safety-banner" role="note">
+          <strong>Medical Disclaimer:</strong> General health education &amp; portal navigation only. Not a medical diagnosis or prescription. In an emergency, immediately call local emergency services or visit the nearest ER.
+        </div>
         <div className="assistant-messages" aria-label="Messages" aria-busy={loadingMessages || busy}>
           {hasEarlier && <button type="button" disabled={loadingMessages || busy} onClick={loadEarlier}>Load earlier messages</button>}
           {loadingMessages && <p role="status">Loading messages…</p>}
           {!loadingMessages && !historyFailed && messages.length === 0 && <div className="assistant-empty">
             <h3>{selected === null ? 'Start a conversation' : 'How can I help?'}</h3>
-            <p>{selected === null ? 'Choose New chat to begin.' : 'Ask how to sign in, find doctors, book or cancel an appointment, or use the Patient Portal.'}</p>
+            <p>{selected === null ? 'Choose New chat to begin.' : 'Ask health education questions, how to book or cancel an appointment, find doctors, or use the Patient Portal.'}</p>
           </div>}
           {messages.map((message) => (
             <article key={message.id} className={`assistant-message assistant-message-${message.role.toLowerCase()}`}>
-              <strong>{message.role === 'USER' ? 'You' : 'Assistant'}</strong>
+              <div>
+                <strong>{message.role === 'USER' ? 'You' : 'Assistant'}</strong>
+                {message.role === 'ASSISTANT' && renderSourceBadge(message.source)}
+              </div>
               <p>{message.content}</p>
               <time dateTime={message.createdAt}>{timestamp(message.createdAt)}</time>
             </article>
@@ -245,7 +262,7 @@ export default function PatientAIAssistant() {
         <form onSubmit={send} className="assistant-composer">
           <label htmlFor="assistant-message">Your message</label>
           <textarea id="assistant-message" value={draft} maxLength={2000}
-            disabled={busy || selected === null || loadingMessages || historyFailed} placeholder="Ask how to use the Patient Portal"
+            disabled={busy || selected === null || loadingMessages || historyFailed} placeholder="Ask a health education or hospital question"
             onChange={(event) => { setDraft(event.target.value); }}
             onKeyDown={(event) => {
               if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
@@ -254,7 +271,18 @@ export default function PatientAIAssistant() {
               }
             }} />
           <div className="assistant-composer-actions">
-            <small>Up to 2,000 characters. Avoid personal details and medical records. Enter sends · Shift + Enter adds a line.</small>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+              <label className="assistant-opt-in-label">
+                <input
+                  type="checkbox"
+                  checked={includeAppointments}
+                  onChange={(e) => setIncludeAppointments(e.target.checked)}
+                  disabled={busy || selected === null || loadingMessages}
+                />
+                <span>Include upcoming appointment summary (opt-in, no medical details)</span>
+              </label>
+              <small>Up to 2,000 characters. Avoid personal details and medical records. Enter sends · Shift + Enter adds a line.</small>
+            </div>
             <button className="assistant-primary" type="submit" disabled={busy || loadingMessages || historyFailed || selected === null || !draft.trim()}>Send</button>
           </div>
         </form>

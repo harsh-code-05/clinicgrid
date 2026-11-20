@@ -13,11 +13,31 @@ import java.security.SecureRandom;
 import java.util.Arrays;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 @EnabledOnOs(OS.WINDOWS)
 class WindowsDpapiMasterKeyProviderTest {
+
+    @Test
+    void rejectsMasterKeyProtectedWithLocalMachineScope() throws Exception {
+        var random = new SecureRandom();
+        byte[] masterKey = new byte[32];
+        try {
+            random.nextBytes(masterKey);
+            byte[] localMachineBlob = Crypt32Util.cryptProtectData(masterKey, WindowsDpapiMasterKeyProvider.purpose(1),
+                    WinCrypt.CRYPTPROTECT_LOCAL_MACHINE | WinCrypt.CRYPTPROTECT_UI_FORBIDDEN, null, null);
+            var files = mock(PrivateFiles.class);
+            when(files.read(Path.of("v1.dpapi"), 16 * 1024)).thenReturn(localMachineBlob);
+
+            assertThatThrownBy(() -> new WindowsDpapiMasterKeyProvider(files, 1))
+                    .isInstanceOf(java.io.IOException.class)
+                    .hasMessageContaining("CurrentUser");
+        } finally {
+            Arrays.fill(masterKey, (byte) 0);
+        }
+    }
 
     @Test
     void wrapsAndUnwrapsTheSameKeyFormatAsPhaseOne() throws Exception {

@@ -5,15 +5,24 @@ import DiscoverySearchForm from '../components/DiscoverySearchForm';
 import { PublicFooter, PublicHeader } from '../components/PublicLayout';
 import { discoveryQuery } from '../utils/discoveryLocation';
 import heroImage from '../assets/discovery/hero-consultation.png';
-import heartIcon from '../assets/discovery/specialty-heart.svg';
 import arrowIcon from '../assets/discovery/arrow-right.svg';
+import SpecialtyIcon from '../components/SpecialtyIcon';
 import './PublicPages.css';
+
+function isGenuineSpecialty(item) {
+  if (!item || !Number.isFinite(item?.id) || typeof item?.name !== 'string') return false;
+  const lower = item.name.trim().toLowerCase();
+  return !lower.startsWith('doc ')
+    && !lower.includes('catalog spec')
+    && !lower.includes('svc spec')
+    && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(lower);
+}
 
 function readSpecializations(data) {
   if (!Array.isArray(data) || data.some((item) => !Number.isFinite(item?.id) || typeof item?.name !== 'string')) {
     throw new Error('Unexpected specialization response.');
   }
-  return data;
+  return data.filter(isGenuineSpecialty);
 }
 
 export default function HomePage() {
@@ -51,7 +60,32 @@ export default function HomePage() {
         <section className="hms-section"><div className="hms-container"><SectionHeading eyebrow="EXPLORE CARE" title="Popular specialties" description="Choose the right type of care for your needs." />
           {loading && <p className="page-note" role="status">Loading specialties…</p>}
           {error && <p className="page-error" role="alert">{error}</p>}
-          {!loading && !error && <div className="specialty-grid">{specializations.map((specialty) => <button className="specialty-tile" type="button" key={specialty.id} onClick={() => openDiscovery({ city: '', specializationId: String(specialty.id), mode: '' })}><span className="specialty-tile__icon"><img src={heartIcon} alt="" /></span><img className="specialty-tile__arrow" src={arrowIcon} alt="" /><strong>{specialty.name}</strong></button>)}</div>}
+          {!loading && !error && (
+            <div className="specialty-grid">
+              {specializations.map((specialty) => (
+                <button
+                  className="specialty-tile"
+                  type="button"
+                  key={specialty.id}
+                  onClick={() => openDiscovery({ city: '', specializationId: String(specialty.id), mode: '' })}
+                  aria-label={`Explore ${specialty.name} doctors`}
+                >
+                  <div className="specialty-tile__top">
+                    <span className="specialty-tile__icon">
+                      <SpecialtyIcon name={specialty.name} />
+                    </span>
+                    <img className="specialty-tile__arrow" src={arrowIcon} alt="" aria-hidden="true" />
+                  </div>
+                  <div className="specialty-tile__content">
+                    <strong>{specialty.name}</strong>
+                    {specialty.description && (
+                      <p className="specialty-tile__desc">{specialty.description}</p>
+                    )}
+                  </div>
+                </button>
+              ))}
+            </div>
+          )}
         </div></section>
         <section className="hms-section hms-section--tinted"><div className="hms-container"><SectionHeading eyebrow="THREE SIMPLE STEPS" title="How it works" description="From care to confirming your visit." /><div className="steps-grid"><InfoCard title="01 · Search doctors" copy="Choose a city, specialty and consultation mode." /><InfoCard title="02 · Compare clinics and availability" copy="Review verified clinic and appointment details when listings are available." /><InfoCard title="03 · Book your consultation" copy="Select a time and confirm the practice you want to visit." /></div></div></section>
         <section className="hms-section"><div className="hms-container"><SectionHeading eyebrow="CARE ON YOUR TERMS" title="Consultation options" description="Choose the format that suits your needs." /><div className="consultation-grid"><InfoCard title="In-clinic consultation" copy="Visit a nearby clinic. Compare fees and available times when public listings are available." action="Explore clinics" onAction={() => navigate('/discover?mode=IN_CLINIC')} /><InfoCard title="Video consultation" copy="Speak with a clinician remotely when a video consultation is available." action="Explore video visits" onAction={() => navigate('/discover?mode=VIDEO')} elevated /></div></div></section>

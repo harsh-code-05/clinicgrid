@@ -41,11 +41,13 @@ export default function DiscoverySearchForm({ initialSearch = {}, specialization
         Specialty
         <select value={search.specializationId} onChange={update('specializationId')}>
           <option value="">Choose a specialty</option>
-          {specializations.map((specialization) => (
-            <option key={specialization.id} value={specialization.id}>
-              {specialization.name}
-            </option>
-          ))}
+          {(specializations || [])
+            .filter((s) => s && s.name && !s.name.toLowerCase().startsWith('doc ') && !s.name.toLowerCase().includes('catalog spec') && !s.name.toLowerCase().includes('svc spec'))
+            .map((specialization) => (
+              <option key={specialization.id} value={specialization.id}>
+                {specialization.name}
+              </option>
+            ))}
         </select>
       </label>
 

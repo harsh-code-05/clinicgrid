@@ -24,6 +24,11 @@ interface PrivateFiles {
     /** Deletes the addressed file. Returns false if it is missing. */
     boolean delete(Path relative) throws IOException;
 
+    /** Returns the unique identifier or GUID of the underlying storage volume. */
+    default String volumeId() {
+        return "";
+    }
+
     /**
      * Enumerates regular files under {@code relativePrefix} in deterministic order after {@code cursor}.
      */

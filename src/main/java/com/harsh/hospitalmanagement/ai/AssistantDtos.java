@@ -13,7 +13,17 @@ public final class AssistantDtos {
     public record CreateSession(@Size(max = 80) String title) {
     }
 
-    public record SendMessage(@NotNull UUID requestId, @NotBlank @Size(max = 2000) String content) {
+    public record SendMessage(
+            @NotNull UUID requestId,
+            @NotBlank @Size(max = 2000) String content,
+            Boolean includeAppointments) {
+        public SendMessage(UUID requestId, String content) {
+            this(requestId, content, false);
+        }
+
+        public boolean optInAppointments() {
+            return Boolean.TRUE.equals(includeAppointments);
+        }
     }
 
     public record Session(Long id, String title, LocalDateTime createdAt, LocalDateTime updatedAt) {
@@ -22,9 +32,14 @@ public final class AssistantDtos {
         }
     }
 
-    public record Message(Long id, UUID requestId, AiChatMessage.Role role, String content, LocalDateTime createdAt) {
+    public record Message(Long id, UUID requestId, AiChatMessage.Role role, String content, String source, LocalDateTime createdAt) {
+        public Message(Long id, UUID requestId, AiChatMessage.Role role, String content, LocalDateTime createdAt) {
+            this(id, requestId, role, content, null, createdAt);
+        }
+
         static Message of(AiChatMessage message) {
-            return new Message(message.getId(), message.getRequestId(), message.getRole(), message.getContent(), message.getCreatedAt());
+            String src = message.getSource() != null ? message.getSource().name() : null;
+            return new Message(message.getId(), message.getRequestId(), message.getRole(), message.getContent(), src, message.getCreatedAt());
         }
     }
 

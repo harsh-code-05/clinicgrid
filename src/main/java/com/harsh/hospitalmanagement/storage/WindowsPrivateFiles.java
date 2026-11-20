@@ -10,6 +10,7 @@ import com.sun.jna.platform.win32.Win32Exception;
 import com.sun.jna.platform.win32.WinBase;
 import com.sun.jna.platform.win32.WinDef.DWORD;
 import com.sun.jna.platform.win32.WinNT;
+import com.sun.jna.ptr.IntByReference;
 import com.sun.jna.ptr.PointerByReference;
 
 import java.io.IOException;
@@ -49,10 +50,15 @@ final class WindowsPrivateFiles implements PrivateFiles {
 
     private final Path root;
     private final String volumeId;
+    private final String nativeVolumeId;
     private final Set<String> trustedSids;
     private final FileAttribute<List<AclEntry>> privateAcl;
 
-    WindowsPrivateFiles(Path root) throws IOException {
+    public WindowsPrivateFiles(Path root) throws IOException {
+        this(root, null);
+    }
+
+    public WindowsPrivateFiles(Path root, String customVolumeId) throws IOException {
         if (!Platform.isWindows() || root == null || !root.isAbsolute() || root.getNameCount() == 0
                 || !root.getRoot().toString().matches("[A-Za-z]:\\\\") || !root.equals(root.normalize())) {
             throw new IOException("Private storage requires an absolute local Windows directory");
@@ -64,7 +70,7 @@ final class WindowsPrivateFiles implements PrivateFiles {
         }
         this.root = root;
         var account = processAccount();
-        trustedSids = new HashSet<>(List.of(account.sidString, "S-1-5-18", "S-1-5-32-544"));
+        trustedSids = Set.of(account.sidString);
         var principal = root.getFileSystem().getUserPrincipalLookupService().lookupPrincipalByName(account.fqn);
         var entry = AclEntry.newBuilder().setType(AclEntryType.ALLOW).setPrincipal(principal)
                 .setPermissions(EnumSet.allOf(AclEntryPermission.class)).build();
@@ -72,7 +78,8 @@ final class WindowsPrivateFiles implements PrivateFiles {
             @Override public String name() { return "acl:acl"; }
             @Override public List<AclEntry> value() { return List.of(entry); }
         };
-        volumeId = volumeId(root);
+        nativeVolumeId = volumeId(root);
+        volumeId = customVolumeId != null ? customVolumeId : nativeVolumeId;
         try (var ignored = pinDirectories(root, false)) {
             if (!root.equals(root.toRealPath(LinkOption.NOFOLLOW_LINKS))
                     || !"NTFS".equalsIgnoreCase(Files.getFileStore(root).type())) {
@@ -82,7 +89,8 @@ final class WindowsPrivateFiles implements PrivateFiles {
         }
     }
 
-    String volumeId() {
+    @Override
+    public String volumeId() {
         return volumeId;
     }
 
@@ -118,11 +126,18 @@ final class WindowsPrivateFiles implements PrivateFiles {
     public byte[] read(Path relative, int maxBytes) throws IOException {
         Path target = resolve(relative);
         try (var ignored = pinDirectories(target.getParent(), false);
-             var file = pin(target, false, true, 0);
-             var input = Files.newInputStream(target, StandardOpenOption.READ, LinkOption.NOFOLLOW_LINKS)) {
-            byte[] bytes = input.readNBytes(maxBytes + 1);
-            if (bytes.length == 0 || bytes.length > maxBytes) {
+             var file = pin(target, false, true, WinNT.GENERIC_READ)) {
+            var standard = new WinBase.FILE_STANDARD_INFO();
+            query(file.handle(), STANDARD_INFO, standard);
+            long length = standard.EndOfFile.getValue();
+            if (length == 0 || length > maxBytes) {
                 throw new IOException("Private file has an invalid size");
+            }
+            byte[] bytes = new byte[(int) length];
+            var bytesRead = new IntByReference();
+            if (!Kernel32.INSTANCE.ReadFile(file.handle(), bytes, (int) length, bytesRead, null)
+                    || bytesRead.getValue() != length) {
+                throw winFailure("Private file could not be read from pinned handle", Kernel32.INSTANCE.GetLastError());
             }
             return bytes;
         }
@@ -333,7 +348,7 @@ final class WindowsPrivateFiles implements PrivateFiles {
 
     private ScanHandle openScanHandle(Path path) throws IOException {
         var handle = Kernel32.INSTANCE.CreateFile(path.toString(),
-                WinNT.FILE_READ_ATTRIBUTES | WinNT.READ_CONTROL,
+                WinNT.FILE_LIST_DIRECTORY | WinNT.FILE_READ_ATTRIBUTES | WinNT.READ_CONTROL,
                 WinNT.FILE_SHARE_READ, null, WinNT.OPEN_EXISTING,
                 WinNT.FILE_FLAG_BACKUP_SEMANTICS | WinNT.FILE_FLAG_OPEN_REPARSE_POINT, null);
         if (handle == null || WinBase.INVALID_HANDLE_VALUE.equals(handle)) {
@@ -442,8 +457,8 @@ final class WindowsPrivateFiles implements PrivateFiles {
         return resolved;
     }
 
-    private Pins pinDirectories(Path directory, boolean create) throws IOException {
-        if (!volumeId.equalsIgnoreCase(volumeId(root))) {
+    Pins pinDirectories(Path directory, boolean create) throws IOException {
+        if (!nativeVolumeId.equalsIgnoreCase(volumeId(root))) {
             throw new IOException("Private storage volume is unavailable");
         }
         var pins = new Pins();
@@ -476,10 +491,20 @@ final class WindowsPrivateFiles implements PrivateFiles {
         }
     }
 
+    private static final Set<String> TRUSTED_ANCESTOR_OWNERS = Set.of(
+            "S-1-5-18", // SYSTEM
+            "S-1-5-32-544", // BUILTIN\Administrators
+            "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464" // TrustedInstaller
+    );
+
     private Pin pin(Path path, boolean directory, boolean checkAcl, int access) throws IOException {
-        // Pin each ancestor without write/delete sharing so it cannot be renamed or turned into a junction.
+        // Pin each directory with FILE_LIST_DIRECTORY without write/delete sharing so it cannot be renamed or substituted.
+        int desiredAccess = (directory ? WinNT.FILE_LIST_DIRECTORY : 0)
+                | WinNT.FILE_READ_ATTRIBUTES
+                | WinNT.READ_CONTROL
+                | access;
         var handle = Kernel32.INSTANCE.CreateFile(path.toString(),
-                WinNT.FILE_READ_ATTRIBUTES | (checkAcl ? WinNT.READ_CONTROL : 0) | access,
+                desiredAccess,
                 WinNT.FILE_SHARE_READ, null, WinNT.OPEN_EXISTING,
                 WinNT.FILE_FLAG_BACKUP_SEMANTICS | WinNT.FILE_FLAG_OPEN_REPARSE_POINT, null);
         if (handle == null || WinBase.INVALID_HANDLE_VALUE.equals(handle)) {
@@ -508,6 +533,8 @@ final class WindowsPrivateFiles implements PrivateFiles {
             }
             if (checkAcl) {
                 requirePrivateAcl(handle, path.equals(root));
+            } else if (directory && !path.startsWith(root)) {
+                requireAncestorSecurity(handle);
             }
             return pin;
         } catch (IOException | RuntimeException failure) {
@@ -517,6 +544,26 @@ final class WindowsPrivateFiles implements PrivateFiles {
                 failure.addSuppressed(closeFailure);
             }
             throw failure;
+        }
+    }
+
+    private void requireAncestorSecurity(WinNT.HANDLE handle) throws IOException {
+        var descriptor = new PointerByReference();
+        int error = Advapi32.INSTANCE.GetSecurityInfo(handle, SE_FILE_OBJECT,
+                WinNT.OWNER_SECURITY_INFORMATION,
+                null, null, null, null, descriptor);
+        if (error != 0) {
+            throw winFailure("Unable to read ancestor owner", error);
+        }
+        try {
+            var security = new WinNT.SECURITY_DESCRIPTOR_RELATIVE(descriptor.getValue());
+            var owner = security.getOwner();
+            String ownerSid = owner != null ? owner.getSidString() : null;
+            if (ownerSid == null || (!TRUSTED_ANCESTOR_OWNERS.contains(ownerSid) && !trustedSids.contains(ownerSid))) {
+                throw new IOException("Private storage ancestor has an untrusted owner: " + ownerSid);
+            }
+        } finally {
+            Kernel32Util.freeLocalMemory(descriptor.getValue());
         }
     }
 
@@ -605,7 +652,7 @@ final class WindowsPrivateFiles implements PrivateFiles {
         }
     }
 
-    private static final class Pins implements AutoCloseable {
+    static final class Pins implements AutoCloseable {
         private final ArrayDeque<Pin> handles = new ArrayDeque<>();
 
         void add(Pin pin) {

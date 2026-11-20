@@ -76,6 +76,8 @@ class AppointmentSlotServiceTest {
         doctor = new Doctor();
         doctor.setId(DOCTOR_ID);
         doctor.setUser(user);
+        doctor.setVerificationStatus(com.harsh.hospitalmanagement.enums.VerificationStatus.VERIFIED);
+        lenient().when(doctorRepository.findById(DOCTOR_ID)).thenReturn(Optional.of(doctor));
     }
 
     @ParameterizedTest

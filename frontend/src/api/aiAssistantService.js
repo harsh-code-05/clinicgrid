@@ -6,7 +6,8 @@ const isSession = (s) => isApiId(s?.id) && typeof s.title === 'string'
   && typeof s.createdAt === 'string' && typeof s.updatedAt === 'string';
 const isMessage = (m) => isApiId(m?.id) && typeof m.requestId === 'string'
   && ['USER', 'ASSISTANT'].includes(m.role) && typeof m.content === 'string' && m.content.length > 0
-  && typeof m.createdAt === 'string';
+  && typeof m.createdAt === 'string'
+  && (m.source === undefined || typeof m.source === 'string');
 
 export function createAssistantService(client) {
   return {
@@ -22,8 +23,12 @@ export function createAssistantService(client) {
         (data) => Array.isArray(data) && data.every(isMessage));
     },
     async send(id, request) {
-      const payload = { requestId: request.requestId, content: request.content };
-      const data = requireJsonResponse(await client.post(`${root}/${id}/messages`, payload, { timeout: 10000 }),
+      const payload = {
+        requestId: request.requestId,
+        content: request.content,
+        includeAppointments: Boolean(request.includeAppointments)
+      };
+      const data = requireJsonResponse(await client.post(`${root}/${id}/messages`, payload, { timeout: 20000 }),
         (value) => Array.isArray(value?.messages) && value.messages.length === 2
           && value.messages.every(isMessage) && value.messages[0].role === 'USER'
           && value.messages[1].role === 'ASSISTANT'

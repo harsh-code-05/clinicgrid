@@ -1,5 +1,7 @@
 package com.harsh.hospitalmanagement.service;
 
+import com.harsh.hospitalmanagement.config.safety.PostgresTestTarget;
+import com.harsh.hospitalmanagement.config.safety.RequiresDisposablePostgres;
 import com.harsh.hospitalmanagement.dto.DoctorAvailabilityRequest;
 import com.harsh.hospitalmanagement.entity.Appointment;
 import com.harsh.hospitalmanagement.entity.AppointmentSlot;
@@ -21,7 +23,6 @@ import jakarta.persistence.EntityManager;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest;
 import org.springframework.boot.jdbc.test.autoconfigure.AutoConfigureTestDatabase;
@@ -56,10 +57,10 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.fail;
 
-@EnabledIfEnvironmentVariable(named = "HMS_APPOINTMENT_TEST_DATABASE", matches = ".+")
+@RequiresDisposablePostgres
 @DataJpaTest(properties = "spring.sql.init.mode=never", showSql = false)
 @AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
-@Import({AppointmentService.class, AppointmentSlotService.class, DoctorAvailabilityService.class,
+@Import({PostgresTestTarget.TestDataSourceConfiguration.class, AppointmentService.class, AppointmentSlotService.class, DoctorAvailabilityService.class,
         DoctorLocationService.class, DoctorManagementAccess.class, AuditLogService.class, LgdDistrictDirectory.class})
 @DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)
 @Transactional(propagation = Propagation.NOT_SUPPORTED)
@@ -79,21 +80,7 @@ class AppointmentCancellationPostgresTest {
 
     @DynamicPropertySource
     static void disposablePostgres(DynamicPropertyRegistry registry) {
-        String database = System.getenv("HMS_APPOINTMENT_TEST_DATABASE");
-        if (database == null || !database.matches("hms_reconcile_validation_[0-9]{8}_[0-9]{6}_[0-9a-f]{8}")) {
-            throw new IllegalArgumentException("A disposable reconciliation database name is required");
-        }
-        String password = System.getenv("HMS_APPOINTMENT_TEST_PASSWORD");
-        if (password == null || password.isBlank()) {
-            throw new IllegalArgumentException("HMS_APPOINTMENT_TEST_PASSWORD is required for PostgreSQL");
-        }
-        registry.add("spring.datasource.url", () -> "jdbc:postgresql://localhost:5433/" + database);
-        registry.add("spring.datasource.driver-class-name", () -> "org.postgresql.Driver");
-        registry.add("spring.datasource.username", () -> "postgres");
-        registry.add("spring.datasource.password", () -> password);
-        registry.add("spring.jpa.hibernate.ddl-auto", () -> "validate");
-        registry.add("spring.datasource.hikari.maximum-pool-size", () -> "10");
-        registry.add("spring.datasource.hikari.minimum-idle", () -> "2");
+        PostgresTestTarget.registerProperties(registry);
     }
 
     @BeforeEach

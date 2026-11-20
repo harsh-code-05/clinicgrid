@@ -178,7 +178,14 @@ public class AppointmentService {
                 .orElseThrow(() ->
                         new ResourceNotFoundException("Doctor not found"));
 
+        if (doctor.getVerificationStatus() != com.harsh.hospitalmanagement.enums.VerificationStatus.VERIFIED) {
+            throw new ForbiddenException("Doctor is not verified for patient appointments");
+        }
+
         AppointmentSlot slot = lockOffer(slotId);
+        if (slot.getDoctor().getVerificationStatus() != com.harsh.hospitalmanagement.enums.VerificationStatus.VERIFIED) {
+            throw new ForbiddenException("Doctor is not verified for patient appointments");
+        }
         if (slot.getOfferVersion() != null) {
             throw new ConflictException("OFFER_REQUIRES_UPGRADE", "Refresh to book this updated offer");
         }
@@ -226,6 +233,9 @@ public class AppointmentService {
             throw new BadRequestException("Expected date and offer version are required");
         }
         AppointmentSlot slot = lockOffer(slotId);
+        if (slot.getDoctor().getVerificationStatus() != com.harsh.hospitalmanagement.enums.VerificationStatus.VERIFIED) {
+            throw new ForbiddenException("Doctor is not verified for patient appointments");
+        }
         Instant now = Instant.now(clock).truncatedTo(ChronoUnit.MICROS);
         if (!offerVersion.equals(slot.getOfferVersion()) || !expectedDate.equals(slot.getDate())
                 || !appointmentSlotRepository.isDiscoverableOffer(slotId)
@@ -254,6 +264,9 @@ public class AppointmentService {
     }
 
     private Appointment confirmBooking(Patient patient, AppointmentSlot slot, String reason, LocalAccount actor) {
+        if (slot.getDoctor().getVerificationStatus() != com.harsh.hospitalmanagement.enums.VerificationStatus.VERIFIED) {
+            throw new ForbiddenException("Doctor is not verified for patient appointments");
+        }
         slot.setStatus(SlotStatus.BOOKED);
 
         Doctor doctor = slot.getDoctor();

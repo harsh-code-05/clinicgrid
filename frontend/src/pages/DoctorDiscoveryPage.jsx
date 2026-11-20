@@ -60,7 +60,17 @@ export default function DoctorDiscoveryPage() {
     api.get('/specializations')
       .then((response) => {
         if (!Array.isArray(response.data)) throw new Error('Unexpected specialization response.');
-        if (active) setSpecializations(response.data.filter((item) => Number.isFinite(item?.id) && typeof item?.name === 'string'));
+        if (active) {
+          setSpecializations(
+            response.data.filter((item) =>
+              Number.isFinite(item?.id) &&
+              typeof item?.name === 'string' &&
+              !item.name.toLowerCase().startsWith('doc ') &&
+              !item.name.toLowerCase().includes('catalog spec') &&
+              !item.name.toLowerCase().includes('svc spec')
+            )
+          );
+        }
       })
       .catch(() => {
         if (active) setSpecError('Specialties could not be loaded right now. Please try again later.');

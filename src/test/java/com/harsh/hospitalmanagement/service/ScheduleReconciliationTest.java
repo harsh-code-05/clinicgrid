@@ -155,6 +155,10 @@ class ScheduleReconciliationTest {
     @Test
     void verificationRecordsPrincipalDerivedActorsAndRestrictsDocumentAccess() throws java.io.IOException {
         Doctor doctor = doctor();
+        transaction(() -> {
+            entityManager.find(Doctor.class, doctor.getId()).setVerificationStatus(VerificationStatus.UNVERIFIED);
+            return null;
+        });
         var owner = authentication(doctor.getUser());
         var otherDoctor = authentication(doctor().getUser());
         var admin = authentication(transaction(() -> user(Role.ADMIN)));
@@ -758,6 +762,7 @@ class ScheduleReconciliationTest {
             Doctor doctor = new Doctor();
             doctor.setUser(user(Role.DOCTOR));
             doctor.setSpecialization(specialization);
+            doctor.setVerificationStatus(VerificationStatus.VERIFIED);
             entityManager.persist(doctor);
             return doctor;
         });

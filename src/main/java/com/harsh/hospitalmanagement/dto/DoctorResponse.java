@@ -12,6 +12,7 @@ public class DoctorResponse {
     private String lastName;
     private String qualification;
     private Integer experience;
+    private com.harsh.hospitalmanagement.enums.VerificationStatus verificationStatus;
 
     private UserResponse user;
 

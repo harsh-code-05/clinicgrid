@@ -1,0 +1,17 @@
+{
+  "formatVersion": 1,
+  "minimumServerVersion": 180001,
+  "catalogDigest": { "path": "database/migration-catalog-digest.sql", "sha256": "742639ffe90934bf4cc350cf327bc1716503cf74d51580e866f7a77b72a2d9ff" },
+  "releaseVerifier": { "path": "database/migration-release-verify.sql", "sha256": "ab8603f17653ff41096c4a82542c561b1b6a34aa79d6cbe68bc7c9cf7e0d523d" },
+  "migrations": [
+    { "version": 1, "id": "BASELINE", "path": "database/pre-sch-02-baseline.sql", "sha256": "a3e17c7693856d33c0573cd6a01edcd1bbb0ea90020af3771c61819ed6b84510" },
+    { "version": 2, "id": "SCH-02", "path": "database/sch-02-availability-revisions.sql", "sha256": "cd16fb26728c38de4b00aa94bfc88723b785fdc32a25fd0e89012c90c00f9d4f" },
+    { "version": 3, "id": "DISCO-01", "path": "database/disco-01-doctor-discovery.sql", "sha256": "cafb027118cca5c3c67458052ccf490af2e55228920ff09607df4f76f0204bf7" },
+    { "version": 4, "id": "DISCO-02", "path": "database/disco-02-clinic-lgd-district.sql", "sha256": "0ee146723ac7541c62061f10fa9634477abfcaccea609bef238d8c87059068ef" },
+    { "version": 5, "id": "DOC-01", "path": "database/doc-01-verification-catalog.sql", "sha256": "7e1b311c9f1737db7aafdc617b41c66e80607e458ea970b1adc3867edc959f1e" },
+    { "version": 6, "id": "AI-01", "path": "database/ai-01-patient-assistant.sql", "sha256": "39aa88774be9cb208f3ff9a51d3a8c197698bc25efcce3e92317ffbc9583a690" },
+    { "version": 7, "id": "AI-02", "path": "database/ai-02-cloudflare-source.sql", "sha256": "ac53d13d5a1378407a44c53ff4f5b347b0faae19a69f2c44c2c4c2260fe50d91", "verifier": { "path": "database/ai-02-verify.sql", "sha256": "13a6fbb8541ec3cc3b34166fab717575450d36019238093fa1c90359ebc6fb7f" } },
+    { "version": 8, "id": "APPT-CANCEL-01", "path": "database/appt-cancel-01-workflow.sql", "sha256": "69f5aa65463e1b889f9645af4956787cfe0ace91d2bd18678cb3467d096a2931", "verifier": { "path": "database/appt-cancel-01-verify.sql", "sha256": "07d4ded277ca6daf109306931fabc4ab1f0bd3cc585d3c60fd70b70214314e7d" } },
+    { "version": 9, "id": "BILL-01", "path": "database/bill-01-schema.sql", "sha256": "9d5bf76e1a5d4e00b7d4296a193a6dfd909606d39bfa6459e71529f6fd3be670", "verifier": { "path": "database/bill-01-verify.sql", "sha256": "4433f6fd13d0cea26e8496c61283824c7082ac64b24483fde771e16fd4c93fda" } }
+  ]
+}
