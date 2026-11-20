@@ -121,17 +121,34 @@ class VideoConsultationControllerTest {
 
     @Test
     @WithLocalUser(username = "patient@test.com", roles = "PATIENT")
-    void getRoomDetails_shouldReturn404_whenAppointmentDoesNotExist() throws Exception {
+    void getRoomDetails_shouldReturn403_whenAppointmentDoesNotExist() throws Exception {
         when(videoConsultationService.getRoomDetails(eq(999L), eq(account("patient@test.com"))))
-                .thenThrow(new ResourceNotFoundException("Appointment not found: 999"));
+                .thenThrow(new ForbiddenException("You are not authorized to access this consultation room"));
 
         mockMvc.perform(get("/api/appointments/999/video-room"))
-                .andExpect(status().isNotFound());
+                .andExpect(status().isForbidden());
     }
 
     @Test
     void getRoomDetails_shouldReturn401_whenUnauthenticated() throws Exception {
         mockMvc.perform(get("/api/appointments/1/video-room"))
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    @WithLocalUser(username = "patient@test.com", roles = "PATIENT")
+    void getVideoStatus_shouldReturnStatus_whenAuthenticated() throws Exception {
+        when(videoConsultationService.isWebrtcEnabled()).thenReturn(false);
+
+        mockMvc.perform(get("/api/appointments/video-status"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.enabled").value(false))
+                .andExpect(jsonPath("$.message").value("Video consultation is temporarily disabled pending security review."));
+    }
+
+    @Test
+    void getVideoStatus_shouldReturn401_whenUnauthenticated() throws Exception {
+        mockMvc.perform(get("/api/appointments/video-status"))
                 .andExpect(status().isUnauthorized());
     }
 }

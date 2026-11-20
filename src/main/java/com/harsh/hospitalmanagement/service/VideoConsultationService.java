@@ -30,6 +30,9 @@ public class VideoConsultationService {
 
     private final AppointmentRepository appointmentRepository;
 
+    @Value("${hms.webrtc.enabled:false}")
+    private boolean webrtcEnabled = false;
+
     @Value("${hms.webrtc.stun-urls:stun:stun.l.google.com:19302,stun:stun1.l.google.com:19302}")
     private String stunUrls = "stun:stun.l.google.com:19302,stun:stun1.l.google.com:19302";
 
@@ -52,6 +55,16 @@ public class VideoConsultationService {
         this.appointmentRepository = appointmentRepository;
     }
 
+    public boolean isWebrtcEnabled() {
+        return webrtcEnabled;
+    }
+
+    public void setWebrtcEnabled(boolean webrtcEnabled) {
+        this.webrtcEnabled = webrtcEnabled;
+    }
+
+    public record SignalingParticipant(String role, String name) {}
+
     void configureTurnForTest(String turnUrl, String turnSecret, long turnTtlSeconds) {
         this.turnUrl = turnUrl;
         this.turnSecret = turnSecret;
@@ -72,19 +85,23 @@ public class VideoConsultationService {
     @Transactional(readOnly = true)
     public VideoRoomResponse getRoomDetails(Long appointmentId, LocalAccount actor) {
         Appointment appointment = appointmentRepository.findById(appointmentId)
-                .orElseThrow(() -> new ResourceNotFoundException("Appointment not found: " + appointmentId));
+                .orElseThrow(() -> new ForbiddenException("You are not authorized to access this consultation room"));
 
         Doctor doctor = appointment.getDoctor();
         Patient patient = appointment.getPatient();
 
-        boolean isDoctor = doctor.getUser() != null && doctor.getUser().getId().equals(actor.id());
-        boolean isPatient = patient.getUser() != null && patient.getUser().getId().equals(actor.id());
+        boolean isDoctor = doctor != null && doctor.getUser() != null && doctor.getUser().getId().equals(actor.id());
+        boolean isPatient = patient != null && patient.getUser() != null && patient.getUser().getId().equals(actor.id());
 
         if (!isDoctor && !isPatient) {
             throw new ForbiddenException("You are not authorized to access this consultation room");
         }
 
-        boolean isVerified = doctor.getVerificationStatus() == VerificationStatus.VERIFIED;
+        if (appointment.getConsultationMode() == com.harsh.hospitalmanagement.enums.ConsultationMode.IN_CLINIC) {
+            throw new ForbiddenException("This appointment is scheduled for in-clinic consultation, not video.");
+        }
+
+        boolean isVerified = doctor != null && doctor.getVerificationStatus() == VerificationStatus.VERIFIED;
         boolean isConfirmed = appointment.getStatus() == AppointmentStatus.CONFIRMED;
 
         String role = isDoctor ? "DOCTOR" : "PATIENT";
@@ -95,10 +112,12 @@ public class VideoConsultationService {
                 ? patient.getFirstName() + " " + patient.getLastName()
                 : "Dr. " + doctor.getFirstName() + " " + doctor.getLastName();
 
-        boolean canJoin = isVerified && isConfirmed;
+        boolean canJoin = webrtcEnabled && isVerified && isConfirmed;
         String statusMessage;
 
-        if (!isVerified) {
+        if (!webrtcEnabled) {
+            statusMessage = "Video consultation is temporarily disabled pending security review.";
+        } else if (!isVerified) {
             statusMessage = "Doctor verification is pending. Video consultation room is locked.";
         } else if (!isConfirmed) {
             statusMessage = "Appointment is " + appointment.getStatus() + ". Video consultation is closed.";
@@ -117,35 +136,52 @@ public class VideoConsultationService {
                 .doctorVerified(isVerified)
                 .canJoin(canJoin)
                 .statusMessage(statusMessage)
-                .iceServers(buildIceServers(actor))
+                .iceServers(canJoin ? buildIceServers(actor) : java.util.Collections.emptyList())
                 .build();
     }
 
     @Transactional(readOnly = true)
-    public void validateSignalingAccess(Long appointmentId, LocalAccount actor) {
+    public SignalingParticipant validateSignalingAccess(Long appointmentId, LocalAccount actor) {
+        if (!webrtcEnabled) {
+            throw new ForbiddenException("Video consultation is temporarily disabled pending security review.");
+        }
+
         Appointment appointment = appointmentRepository.findById(appointmentId)
-                .orElseThrow(() -> new ResourceNotFoundException("Appointment not found: " + appointmentId));
+                .orElseThrow(() -> new ForbiddenException("You are not authorized to participate in this consultation room"));
 
         Doctor doctor = appointment.getDoctor();
         Patient patient = appointment.getPatient();
 
-        boolean isDoctor = doctor.getUser() != null && doctor.getUser().getId().equals(actor.id());
-        boolean isPatient = patient.getUser() != null && patient.getUser().getId().equals(actor.id());
+        boolean isDoctor = doctor != null && doctor.getUser() != null && doctor.getUser().getId().equals(actor.id());
+        boolean isPatient = patient != null && patient.getUser() != null && patient.getUser().getId().equals(actor.id());
 
         if (!isDoctor && !isPatient) {
             throw new ForbiddenException("You are not authorized to participate in this consultation room");
         }
 
-        if (doctor.getVerificationStatus() != VerificationStatus.VERIFIED) {
+        if (appointment.getConsultationMode() == com.harsh.hospitalmanagement.enums.ConsultationMode.IN_CLINIC) {
+            throw new ForbiddenException("This appointment is scheduled for in-clinic consultation, not video.");
+        }
+
+        if (doctor == null || doctor.getVerificationStatus() != VerificationStatus.VERIFIED) {
             throw new ForbiddenException("Doctor is not verified. Video room access is locked.");
         }
 
         if (appointment.getStatus() != AppointmentStatus.CONFIRMED) {
             throw new ForbiddenException("Appointment is not confirmed. Video room is closed.");
         }
+
+        String role = isDoctor ? "DOCTOR" : "PATIENT";
+        String name = isDoctor
+                ? "Dr. " + doctor.getFirstName() + " " + doctor.getLastName()
+                : patient.getFirstName() + " " + patient.getLastName();
+        return new SignalingParticipant(role, name);
     }
 
     private List<VideoRoomResponse.IceServerConfig> buildIceServers(LocalAccount actor) {
+        if (!webrtcEnabled) {
+            return java.util.Collections.emptyList();
+        }
         String urls = (stunUrls != null && !stunUrls.isBlank())
                 ? stunUrls
                 : "stun:stun.l.google.com:19302,stun:stun1.l.google.com:19302";

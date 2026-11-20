@@ -13,11 +13,17 @@ export function VideoRoomModal({ appointmentId, onClose }) {
 
   useEffect(() => {
     let active = true;
+    setRoomDetails(null);
+    setFetchError(null);
+
     async function loadRoom() {
       try {
         setLoading(true);
         const res = await api.get(`/appointments/${appointmentId}/video-room`);
         if (active) {
+          if (res.data?.appointmentId && Number(res.data.appointmentId) !== Number(appointmentId)) {
+            return;
+          }
           setRoomDetails(res.data);
           setFetchError(null);
         }
@@ -34,6 +40,8 @@ export function VideoRoomModal({ appointmentId, onClose }) {
     loadRoom();
     return () => {
       active = false;
+      setRoomDetails(null);
+      setFetchError(null);
     };
   }, [appointmentId]);
 
@@ -116,7 +124,7 @@ export function VideoRoomModal({ appointmentId, onClose }) {
               Close
             </button>
           </div>
-        ) : !roomDetails?.canJoin ? (
+        ) : roomDetails?.canJoin !== true ? (
           <div className="video-locked-pane">
             <div className="lock-icon">⚠️</div>
             <h3>Consultation Room Locked</h3>

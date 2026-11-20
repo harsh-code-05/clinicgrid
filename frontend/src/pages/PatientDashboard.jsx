@@ -108,6 +108,8 @@ export default function PatientDashboard() {
   const [cancelError, setCancelError] = useState('');
   const [cancelRefreshWarning, setCancelRefreshWarning] = useState('');
   const [activeVideoApptId, setActiveVideoApptId] = useState(null);
+  const [videoConsultationEnabled, setVideoConsultationEnabled] = useState(false);
+  const [videoConsultationMessage, setVideoConsultationMessage] = useState('Video consultation is temporarily disabled pending security review.');
 
   const cancelInProgressRef = useRef(false);
   const mountedRef = useRef(true);
@@ -133,6 +135,25 @@ export default function PatientDashboard() {
       sequencer.dispose();
     };
   }, [getSequencer]);
+
+  useEffect(() => {
+    let active = true;
+    api.get('/appointments/video-status')
+      .then((res) => {
+        if (!active) return;
+        setVideoConsultationEnabled(res.data?.enabled === true);
+        if (res.data?.message) {
+          setVideoConsultationMessage(res.data.message);
+        }
+      })
+      .catch(() => {
+        if (!active) return;
+        setVideoConsultationEnabled(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   // Booking wizard state
   const [specializations, setSpecializations] = useState([]);
@@ -851,13 +872,24 @@ export default function PatientDashboard() {
 
                       <div className="card-actions">
                         {isDocVerified && appt.status === 'CONFIRMED' && (
-                          <button
-                            type="button"
-                            className="btn-join-video"
-                            onClick={() => setActiveVideoApptId(appt.id)}
-                          >
-                            📹 Join Video Call
-                          </button>
+                          videoConsultationEnabled === true ? (
+                            <button
+                              type="button"
+                              className="btn-join-video"
+                              onClick={() => setActiveVideoApptId(appt.id)}
+                            >
+                              📹 Join Video Call
+                            </button>
+                          ) : (
+                            <button
+                              type="button"
+                              className="btn-join-video disabled"
+                              disabled
+                              title={videoConsultationMessage}
+                            >
+                              📹 Video Call (Disabled)
+                            </button>
+                          )
                         )}
                         {canCancel && (
                           <button

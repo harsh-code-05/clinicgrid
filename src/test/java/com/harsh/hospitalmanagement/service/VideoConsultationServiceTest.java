@@ -17,6 +17,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.test.util.ReflectionTestUtils;
 
 import java.util.Optional;
 
@@ -42,6 +43,7 @@ class VideoConsultationServiceTest {
     @BeforeEach
     void setUp() {
         service = new VideoConsultationService(appointmentRepository);
+        service.setWebrtcEnabled(true);
 
         patientUser = new User();
         patientUser.setId(10L);
@@ -130,6 +132,7 @@ class VideoConsultationServiceTest {
         assertThat(response.isCanJoin()).isFalse();
         assertThat(response.isDoctorVerified()).isFalse();
         assertThat(response.getStatusMessage()).contains("Doctor verification is pending");
+        assertThat(response.getIceServers()).isEmpty();
     }
 
     @Test
@@ -142,15 +145,49 @@ class VideoConsultationServiceTest {
 
         assertThat(response.isCanJoin()).isFalse();
         assertThat(response.getStatusMessage()).contains("Appointment is CANCELLED");
+        assertThat(response.getIceServers()).isEmpty();
     }
 
     @Test
-    void getRoomDetails_shouldThrowNotFound_whenAppointmentDoesNotExist() {
+    void getRoomDetails_shouldThrowForbidden_whenAppointmentDoesNotExist() {
         when(appointmentRepository.findById(999L)).thenReturn(Optional.empty());
 
         LocalAccount actor = new LocalAccount(10L, "patient@example.com");
         assertThatThrownBy(() -> service.getRoomDetails(999L, actor))
-                .isInstanceOf(ResourceNotFoundException.class);
+                .isInstanceOf(ForbiddenException.class)
+                .hasMessageContaining("not authorized");
+    }
+
+    @Test
+    void getRoomDetails_shouldThrowForbidden_whenConsultationModeIsInClinic() {
+        ReflectionTestUtils.setField(confirmedAppointment, "consultationMode", com.harsh.hospitalmanagement.enums.ConsultationMode.IN_CLINIC);
+        when(appointmentRepository.findById(1L)).thenReturn(Optional.of(confirmedAppointment));
+
+        LocalAccount patientActor = new LocalAccount(10L, "patient@example.com");
+        assertThatThrownBy(() -> service.getRoomDetails(1L, patientActor))
+                .isInstanceOf(ForbiddenException.class)
+                .hasMessageContaining("in-clinic");
+    }
+
+    @Test
+    void validateSignalingAccess_shouldThrowForbidden_whenConsultationModeIsInClinic() {
+        ReflectionTestUtils.setField(confirmedAppointment, "consultationMode", com.harsh.hospitalmanagement.enums.ConsultationMode.IN_CLINIC);
+        when(appointmentRepository.findById(1L)).thenReturn(Optional.of(confirmedAppointment));
+
+        LocalAccount patientActor = new LocalAccount(10L, "patient@example.com");
+        assertThatThrownBy(() -> service.validateSignalingAccess(1L, patientActor))
+                .isInstanceOf(ForbiddenException.class)
+                .hasMessageContaining("in-clinic");
+    }
+
+    @Test
+    void validateSignalingAccess_shouldThrowForbidden_whenAppointmentDoesNotExist() {
+        when(appointmentRepository.findById(999L)).thenReturn(Optional.empty());
+
+        LocalAccount actor = new LocalAccount(10L, "patient@example.com");
+        assertThatThrownBy(() -> service.validateSignalingAccess(999L, actor))
+                .isInstanceOf(ForbiddenException.class)
+                .hasMessageContaining("not authorized");
     }
 
     @Test
@@ -210,5 +247,92 @@ class VideoConsultationServiceTest {
         String credential1 = VideoConsultationService.generateShortLivedTurnCredential(secret, username);
         String credential2 = VideoConsultationService.generateShortLivedTurnCredential(secret, username);
         assertThat(credential1).isNotNull().isEqualTo(credential2);
+    }
+
+    @Test
+    void defaultConfiguration_shouldHaveWebrtcDisabledByDefault() {
+        VideoConsultationService defaultService = new VideoConsultationService(appointmentRepository);
+        assertThat(defaultService.isWebrtcEnabled()).isFalse();
+    }
+
+    @Test
+    void configuration_missingProperty_defaultsToFalse() {
+        VideoConsultationService svc = new VideoConsultationService(appointmentRepository);
+        assertThat(svc.isWebrtcEnabled()).isFalse();
+    }
+
+    @Test
+    void configuration_explicitFalse_disablesFeature() {
+        VideoConsultationService svc = new VideoConsultationService(appointmentRepository);
+        svc.setWebrtcEnabled(false);
+        assertThat(svc.isWebrtcEnabled()).isFalse();
+    }
+
+    @Test
+    void configuration_explicitTrue_enablesFeatureIntentionally() {
+        VideoConsultationService svc = new VideoConsultationService(appointmentRepository);
+        svc.setWebrtcEnabled(true);
+        assertThat(svc.isWebrtcEnabled()).isTrue();
+    }
+
+    @Test
+    void configuration_springPropertyBinding_failsSafelyForInvalidValues() {
+        org.springframework.core.convert.support.DefaultConversionService conversionService =
+                new org.springframework.core.convert.support.DefaultConversionService();
+
+        // Strict fail-closed verification:
+        assertThat(conversionService.convert("false", Boolean.class)).isFalse();
+        assertThat(conversionService.convert("FALSE", Boolean.class)).isFalse();
+        assertThat(conversionService.convert("0", Boolean.class)).isFalse();
+        assertThat(conversionService.convert("", Boolean.class)).isNull();
+
+        // Invalid non-boolean string fails closed by throwing ConversionFailedException
+        assertThatThrownBy(() -> conversionService.convert("invalid", Boolean.class))
+                .isInstanceOf(org.springframework.core.convert.ConversionFailedException.class);
+        assertThatThrownBy(() -> conversionService.convert("disabled", Boolean.class))
+                .isInstanceOf(org.springframework.core.convert.ConversionFailedException.class);
+
+        // Only explicit true enables
+        assertThat(conversionService.convert("true", Boolean.class)).isTrue();
+        assertThat(conversionService.convert("TRUE", Boolean.class)).isTrue();
+        assertThat(conversionService.convert("1", Boolean.class)).isTrue();
+    }
+
+    @Test
+    void getRoomDetails_shouldReturnCanJoinFalseAndEmptyIce_whenWebrtcDisabled() {
+        service.setWebrtcEnabled(false);
+        when(appointmentRepository.findById(1L)).thenReturn(Optional.of(confirmedAppointment));
+
+        LocalAccount patientActor = new LocalAccount(10L, "patient@example.com");
+        VideoRoomResponse response = service.getRoomDetails(1L, patientActor);
+
+        assertThat(response.isCanJoin()).isFalse();
+        assertThat(response.getStatusMessage()).contains("temporarily disabled pending security review");
+        assertThat(response.getIceServers()).isEmpty();
+    }
+
+    @Test
+    void validateSignalingAccess_shouldThrowForbidden_whenWebrtcDisabled() {
+        service.setWebrtcEnabled(false);
+        LocalAccount patientActor = new LocalAccount(10L, "patient@example.com");
+
+        assertThatThrownBy(() -> service.validateSignalingAccess(1L, patientActor))
+                .isInstanceOf(ForbiddenException.class)
+                .hasMessageContaining("temporarily disabled pending security review");
+    }
+
+    @Test
+    void validateSignalingAccess_returnsVerifiedRoleAndName_whenEnabled() {
+        when(appointmentRepository.findById(1L)).thenReturn(Optional.of(confirmedAppointment));
+
+        LocalAccount patientActor = new LocalAccount(10L, "patient@example.com");
+        VideoConsultationService.SignalingParticipant patientParticipant = service.validateSignalingAccess(1L, patientActor);
+        assertThat(patientParticipant.role()).isEqualTo("PATIENT");
+        assertThat(patientParticipant.name()).isEqualTo("John Doe");
+
+        LocalAccount doctorActor = new LocalAccount(20L, "doctor@example.com");
+        VideoConsultationService.SignalingParticipant doctorParticipant = service.validateSignalingAccess(1L, doctorActor);
+        assertThat(doctorParticipant.role()).isEqualTo("DOCTOR");
+        assertThat(doctorParticipant.name()).isEqualTo("Dr. Gregory House");
     }
 }

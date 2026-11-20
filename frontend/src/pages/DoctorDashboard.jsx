@@ -74,6 +74,8 @@ export default function DoctorDashboard() {
   const [cancellingAppt, setCancellingAppt] = useState(null);
   const [cancelReason, setCancelReason] = useState('');
   const [activeVideoApptId, setActiveVideoApptId] = useState(null);
+  const [videoConsultationEnabled, setVideoConsultationEnabled] = useState(false);
+  const [videoConsultationMessage, setVideoConsultationMessage] = useState('Video consultation is temporarily disabled pending security review.');
   const [isCancelling, setIsCancelling] = useState(false);
   const [cancelError, setCancelError] = useState('');
   const [cancelRefreshWarning, setCancelRefreshWarning] = useState('');
@@ -102,6 +104,25 @@ export default function DoctorDashboard() {
       sequencer.dispose();
     };
   }, [getSequencer]);
+
+  useEffect(() => {
+    let active = true;
+    api.get('/appointments/video-status')
+      .then((res) => {
+        if (!active) return;
+        setVideoConsultationEnabled(res.data?.enabled === true);
+        if (res.data?.message) {
+          setVideoConsultationMessage(res.data.message);
+        }
+      })
+      .catch(() => {
+        if (!active) return;
+        setVideoConsultationEnabled(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   // 1. Fetch Doctor Profile
   const fetchDoctorProfile = useCallback(async () => {
@@ -596,13 +617,24 @@ export default function DoctorDashboard() {
                           {appt.status === 'CONFIRMED' && (
                             <div className="card-actions">
                               {doctorProfile?.verificationStatus === 'VERIFIED' && (
-                                <button
-                                  type="button"
-                                  className="btn-join-video"
-                                  onClick={() => setActiveVideoApptId(appt.id)}
-                                >
-                                  📹 Join Video Call
-                                </button>
+                                videoConsultationEnabled === true ? (
+                                  <button
+                                    type="button"
+                                    className="btn-join-video"
+                                    onClick={() => setActiveVideoApptId(appt.id)}
+                                  >
+                                    📹 Join Video Call
+                                  </button>
+                                ) : (
+                                  <button
+                                    type="button"
+                                    className="btn-join-video disabled"
+                                    disabled
+                                    title={videoConsultationMessage}
+                                  >
+                                    📹 Video Call (Disabled)
+                                  </button>
+                                )
                               )}
                               <button
                                 type="button"

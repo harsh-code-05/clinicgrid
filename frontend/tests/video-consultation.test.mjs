@@ -1668,4 +1668,67 @@ test('useWebRTC hook - Delayed ICE candidate from older session with matching ge
   patHarness.unmount();
 });
 
+test('useWebRTC hook - Doctor verification revocation error immediately halts media and fails connection', async () => {
+  MockHookRTCPeerConnection.instances = [];
+
+  const patRoom = { canJoin: true, userRole: 'PATIENT', userName: 'Patient Alice' };
+  const patHarness = createHookHarness();
+  patHarness.render({ appointmentId: 17, roomDetails: patRoom });
+
+  await new Promise((r) => setTimeout(r, 50));
+  const patWs = patHarness.getLatestSocket();
+  patWs.simulateServerMessage('CONNECTED\nversion:1.2\n\n\0');
+  await new Promise((r) => setTimeout(r, 20));
+
+  // Verify peer connection was instantiated
+  const activePc = MockHookRTCPeerConnection.instances[MockHookRTCPeerConnection.instances.length - 1];
+  assert.ok(activePc, 'Peer connection should exist');
+  assert.notEqual(activePc.signalingState, 'closed', 'Peer connection should be open');
+
+  // Populate remote media stream via ontrack and peer media state via MEDIA_STATE frame
+  const mockRemoteStream = new MockMediaStream();
+  if (activePc.ontrack) {
+    activePc.ontrack({ streams: [mockRemoteStream] });
+  }
+  patWs.simulateServerMessage(
+    `MESSAGE\nsubscription:sub-1\ndestination:/topic/video/room/17\n\n${JSON.stringify({
+      type: 'MEDIA_STATE',
+      senderRole: 'DOCTOR',
+      payload: { isAudioMuted: true, isVideoOff: true },
+    })}\0`
+  );
+  await new Promise((r) => setTimeout(r, 20));
+
+  // Assert remote media and peer state are actively populated BEFORE denial
+  assert.equal(patHarness.hooks[1]?.value, mockRemoteStream, 'Remote stream must be populated before revocation');
+  assert.equal(patHarness.hooks[5]?.value?.isAudioMuted, true, 'Peer audio muted must be true before revocation');
+  assert.equal(patHarness.hooks[5]?.value?.isVideoOff, true, 'Peer video off must be true before revocation');
+
+  // Server delivers actual doctor unverified denial ERROR frame
+  patWs.simulateServerMessage(
+    'ERROR\nmessage:Doctor is not verified. Video room access is locked.\n\n\0'
+  );
+  await new Promise((r) => setTimeout(r, 20));
+
+  assert.equal(activePc.signalingState, 'closed', 'Peer connection must be closed upon doctor unverified revocation');
+  assert.equal(patHarness.getConnectionState(), 'failed', 'Connection state must be set to failed');
+  assert.equal(patHarness.hooks[0]?.value, null, 'Local media stream must be cleared');
+  assert.equal(patHarness.hooks[1]?.value, null, 'Remote media stream must be cleared');
+  assert.equal(patHarness.hooks[5]?.value?.isAudioMuted, false, 'Peer audio muted state must be reset');
+  assert.equal(patHarness.hooks[5]?.value?.isVideoOff, false, 'Peer video off state must be reset');
+
+  // Verify signaling client was disconnected and retries were cancelled
+  const sigClient = patHarness.getSignalingClient();
+  assert.equal(sigClient.manualClose, true, 'SignalingClient must have manualClose=true to disable reconnection');
+  assert.equal(sigClient.reconnectTimer, null, 'SignalingClient must have no pending reconnect timer');
+
+  // Now simulate subsequent WebSocket TCP close event that follows ERROR frame
+  if (patWs.onclose) patWs.onclose();
+  await new Promise((r) => setTimeout(r, 20));
+
+  // Verify connectionState is NOT overwritten to 'disconnected' and remains 'failed'
+  assert.equal(patHarness.getConnectionState(), 'failed', 'Connection state must remain terminally failed after socket close');
+
+  patHarness.unmount();
+});
 

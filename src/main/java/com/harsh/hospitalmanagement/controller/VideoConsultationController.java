@@ -10,6 +10,8 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.util.Map;
+
 @RestController
 @RequestMapping("/api/appointments")
 public class VideoConsultationController {
@@ -18,6 +20,17 @@ public class VideoConsultationController {
 
     public VideoConsultationController(VideoConsultationService videoConsultationService) {
         this.videoConsultationService = videoConsultationService;
+    }
+
+    @GetMapping({"/video-status", "/video-consultation/status"})
+    public ResponseEntity<Map<String, Object>> getVideoStatus() {
+        boolean enabled = videoConsultationService.isWebrtcEnabled();
+        return ResponseEntity.ok(Map.of(
+                "enabled", enabled,
+                "message", enabled
+                        ? "Video consultation is active."
+                        : "Video consultation is temporarily disabled pending security review."
+        ));
     }
 
     @GetMapping("/{id}/video-room")

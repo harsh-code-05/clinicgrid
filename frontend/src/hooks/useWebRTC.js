@@ -30,6 +30,7 @@ export function useWebRTC({ appointmentId, roomDetails, onCallEnded }) {
   const remoteGenerationRef = useRef(0);
   const sessionIdRef = useRef(null);
   const remoteSessionIdRef = useRef(null);
+  const isTerminatedRef = useRef(false);
 
   useEffect(() => {
     roomDetailsRef.current = roomDetails;
@@ -123,13 +124,15 @@ export function useWebRTC({ appointmentId, roomDetails, onCallEnded }) {
   }, [appointmentId]);
 
   useEffect(() => {
-    if (!roomDetails || !roomDetails.canJoin) {
+    if (!roomDetails || roomDetails.canJoin !== true) {
+      setConnectionState('locked');
       return;
     }
 
     // Set initiator based on loaded room details
     isInitiatorRef.current = roomDetails.userRole === 'DOCTOR';
     sessionIdRef.current = `s_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+    isTerminatedRef.current = false;
 
     let isMounted = true;
 
@@ -288,7 +291,7 @@ export function useWebRTC({ appointmentId, roomDetails, onCallEnded }) {
         setConnectionState('connecting_signaling');
         const signaling = new SignalingClient({
           onConnected: () => {
-            if (!isMounted) return;
+            if (!isMounted || isTerminatedRef.current) return;
             setConnectionState('waiting_for_peer');
             // If signaling reconnected after prior session or interrupted negotiation, reset peer connection & offer guards
             if (offerSentRef.current || isMakingOfferRef.current || pcRef.current?.connectionState === 'connected' || pcRef.current?.connectionState === 'disconnected' || pcRef.current?.connectionState === 'failed' || pcRef.current?.signalingState !== 'stable') {
@@ -305,10 +308,30 @@ export function useWebRTC({ appointmentId, roomDetails, onCallEnded }) {
           },
           onError: (err) => {
             if (!isMounted) return;
-            setError(err.message || 'Signaling error');
+            const errMsg = err?.message || 'Signaling error';
+            setError(errMsg);
+            if (/denied|forbidden|disabled|not confirmed|closed|not authorized|unauthorized|not verified|verification is pending|locked|in-clinic|rejected/i.test(errMsg)) {
+              isTerminatedRef.current = true;
+              if (localStreamRef.current) {
+                localStreamRef.current.getTracks().forEach((track) => track.stop());
+                localStreamRef.current = null;
+                setLocalStream(null);
+              }
+              if (pcRef.current) {
+                try { pcRef.current.close(); } catch {}
+                pcRef.current = null;
+              }
+              setRemoteStream(null);
+              setPeerMediaState({ isAudioMuted: false, isVideoOff: false });
+              pendingCandidates.current = [];
+              if (signalingRef.current) {
+                signalingRef.current.disconnect();
+              }
+              setConnectionState('failed');
+            }
           },
           onDisconnected: () => {
-            if (!isMounted) return;
+            if (!isMounted || isTerminatedRef.current) return;
             if (pcRef.current?.connectionState !== 'connected') {
               setConnectionState('disconnected');
             }
@@ -576,11 +599,13 @@ export function useWebRTC({ appointmentId, roomDetails, onCallEnded }) {
                   void candErr;
                 }
               } else {
-                pendingCandidates.current.push({
-                  candidate: message.payload,
-                  sessionId: candSessionId,
-                  generation: candGen,
-                });
+                if (pendingCandidates.current.length < 100) {
+                  pendingCandidates.current.push({
+                    candidate: message.payload,
+                    sessionId: candSessionId,
+                    generation: candGen,
+                  });
+                }
               }
             } else if (msgType === 'MEDIA_STATE') {
               if (message.payload) {

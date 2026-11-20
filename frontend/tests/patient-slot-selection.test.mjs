@@ -116,6 +116,7 @@ async function setup(draft = { bookingReason: 'Routine visit' }) {
         if (path === '/patients/me') return Promise.resolve(json(profile));
         if (path === '/appointments' && holdAppointmentsRefresh) return appointmentsRefresh.promise;
         if (path === '/doctors') return Promise.resolve(json([{ id: 2 }, { id: 3 }]));
+        if (path === '/appointments/video-status') return Promise.resolve(json({ enabled: false }));
         assert.ok(path === '/appointments' || path === '/specializations', path);
         return Promise.resolve(json([]));
       },

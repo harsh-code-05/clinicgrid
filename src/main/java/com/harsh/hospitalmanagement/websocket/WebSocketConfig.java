@@ -87,7 +87,7 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
             }
         }
         if (patterns.isEmpty()) {
-            return new String[]{"*"};
+            return new String[0];
         }
         return patterns.toArray(new String[0]);
     }
@@ -96,7 +96,13 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
         if (clientOutboundChannel != null && accessor != null && accessor.getSessionId() != null) {
             try {
                 StompHeaderAccessor errorAccessor = StompHeaderAccessor.create(StompCommand.ERROR);
-                errorAccessor.setMessage("Failed to send message: " + errorMessage);
+                String sanitized = (errorMessage != null && !errorMessage.isBlank())
+                        ? errorMessage.replaceAll("[\\r\\n]+", " ").trim()
+                        : "Access denied";
+                if (sanitized.length() > 200) {
+                    sanitized = sanitized.substring(0, 200);
+                }
+                errorAccessor.setMessage(sanitized);
                 errorAccessor.setSessionId(accessor.getSessionId());
                 if (accessor.getReceipt() != null) {
                     errorAccessor.setReceiptId(accessor.getReceipt());
@@ -135,7 +141,11 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
 
     @Override
     public void configureClientInboundChannel(ChannelRegistration registration) {
-        registration.interceptors(new ChannelInterceptor() {
+        registration.interceptors(createInboundChannelInterceptor());
+    }
+
+    ChannelInterceptor createInboundChannelInterceptor() {
+        return new ChannelInterceptor() {
             @Override
             public Message<?> preSend(Message<?> message, MessageChannel channel) {
                 StompHeaderAccessor accessor =
@@ -150,7 +160,7 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
                     throw new AccessDeniedException("Client command not permitted: " + command);
                 }
 
-                if (command == StompCommand.CONNECT) {
+                if (command == StompCommand.CONNECT || command == StompCommand.STOMP) {
                     Authentication auth = (Authentication) accessor.getUser();
                     if (auth == null || !auth.isAuthenticated()) {
                         sendErrorToClient(accessor, "Unauthenticated WebSocket connection");
@@ -167,7 +177,17 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
                         sendErrorToClient(accessor, "Unauthorized subscription destination: " + destination);
                         throw new AccessDeniedException("Unauthorized subscription destination: " + destination);
                     }
-                    Long appointmentId = Long.parseLong(matcher.group(1));
+                    Long appointmentId;
+                    try {
+                        appointmentId = Long.parseLong(matcher.group(1));
+                    } catch (NumberFormatException e) {
+                        sendErrorToClient(accessor, "Invalid appointment ID");
+                        throw new AccessDeniedException("Invalid appointment ID");
+                    }
+                    if (appointmentId <= 0 || appointmentId > 10_000_000_000L) {
+                        sendErrorToClient(accessor, "Invalid appointment ID");
+                        throw new AccessDeniedException("Invalid appointment ID");
+                    }
                     Authentication auth = (Authentication) accessor.getUser();
                     if (auth == null) {
                         sendErrorToClient(accessor, "Unauthenticated subscription");
@@ -195,7 +215,17 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
                         sendErrorToClient(accessor, "Unauthorized message destination: " + destination);
                         throw new AccessDeniedException("Unauthorized message destination: " + destination);
                     }
-                    Long appointmentId = Long.parseLong(matcher.group(1));
+                    Long appointmentId;
+                    try {
+                        appointmentId = Long.parseLong(matcher.group(1));
+                    } catch (NumberFormatException e) {
+                        sendErrorToClient(accessor, "Invalid appointment ID");
+                        throw new AccessDeniedException("Invalid appointment ID");
+                    }
+                    if (appointmentId <= 0 || appointmentId > 10_000_000_000L) {
+                        sendErrorToClient(accessor, "Invalid appointment ID");
+                        throw new AccessDeniedException("Invalid appointment ID");
+                    }
                     Authentication auth = (Authentication) accessor.getUser();
                     if (auth == null) {
                         sendErrorToClient(accessor, "Unauthenticated signaling message");
@@ -212,6 +242,6 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
 
                 return message;
             }
-        });
+        };
     }
 }

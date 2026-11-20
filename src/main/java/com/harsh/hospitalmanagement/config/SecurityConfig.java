@@ -427,6 +427,10 @@ public class SecurityConfig {
                                 "/api/appointments/**", "/api/v2/appointments"
                         ).hasRole("PATIENT")
 
+                        .requestMatchers(HttpMethod.GET, "/api/appointments/video-status",
+                                "/api/appointments/video-consultation/status")
+                        .hasAnyRole("DOCTOR", "PATIENT", "ADMIN")
+
                         .requestMatchers(HttpMethod.GET, "/api/appointments/*/video-room")
                         .hasAnyRole("DOCTOR", "PATIENT")
 
